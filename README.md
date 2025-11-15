@@ -6,7 +6,9 @@ It is a pilot project for voice to voice.
 
 [Building voice agents with OpenAI — Dominik Kundel, OpenAI](https://www.youtube.com/watch?v=iXhba366fQc)
 
-chained voice agent
+chained voice agent: tone, longer delay, context 문제 
+
+speech-to-speech voice agent: 
 
 
 ## Reference 
