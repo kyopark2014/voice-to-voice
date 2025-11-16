@@ -1,6 +1,6 @@
-# voice-to-voice
-It is a pilot project for voice to voice.
+# Speech to Speech
 
+여기서는 Speech to Speech의 구현에 대해 정리합니다.
 
 [Introducing gpt-realtime in the API](https://www.youtube.com/watch?v=nfBbmtMJhX0)
 
