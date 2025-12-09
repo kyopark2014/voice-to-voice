@@ -2,6 +2,13 @@
 
 여기서는 Speech to Speech의 구현에 대해 정리합니다.
 
+```text
+pip install aws_sdk_bedrock_runtime
+```
+
+
+
+
 [Introducing gpt-realtime in the API](https://www.youtube.com/watch?v=nfBbmtMJhX0)
 
 [Building voice agents with OpenAI — Dominik Kundel, OpenAI](https://www.youtube.com/watch?v=iXhba366fQc)
