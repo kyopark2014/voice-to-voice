@@ -27,6 +27,8 @@ speech-to-speech voice agent:
 
 ## Reference 
 
+[Amazon Nova Sonic Python Streaming Implementation](https://github.com/aws-samples/amazon-nova-samples/tree/main/speech-to-speech/sample-codes/console-python)
+
 [Amazon Bedrock Runtime Client](https://pypi.org/project/aws_sdk_bedrock_runtime/)
 
 [Unlocking Voice Interaction with LangGraph Agents](https://www.youtube.com/watch?v=xM67AJy1aL8): voice를 text로 변환하여 LangGraph agent를 활용
