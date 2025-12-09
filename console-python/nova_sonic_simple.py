@@ -4,6 +4,8 @@ import base64
 import json
 import uuid
 import pyaudio
+from pathlib import Path
+from configparser import ConfigParser
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
@@ -15,6 +17,62 @@ OUTPUT_SAMPLE_RATE = 24000
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
 CHUNK_SIZE = 1024
+
+def load_aws_credentials_from_config(profile='default'):
+    """
+    Load AWS credentials from ~/.aws/credentials and ~/.aws/config files.
+    Sets environment variables if they are not already set.
+    """
+    aws_dir = Path.home() / '.aws'
+    credentials_file = aws_dir / 'credentials'
+    config_file = aws_dir / 'config'
+    
+    # Load credentials file
+    if credentials_file.exists():
+        credentials_parser = ConfigParser()
+        credentials_parser.read(credentials_file)
+        
+        if profile in credentials_parser:
+            profile_section = credentials_parser[profile]
+            
+            # Set access key if not already in environment
+            if 'AWS_ACCESS_KEY_ID' not in os.environ:
+                access_key = profile_section.get('aws_access_key_id')
+                if access_key:
+                    os.environ['AWS_ACCESS_KEY_ID'] = access_key
+            
+            # Set secret key if not already in environment
+            if 'AWS_SECRET_ACCESS_KEY' not in os.environ:
+                secret_key = profile_section.get('aws_secret_access_key')
+                if secret_key:
+                    os.environ['AWS_SECRET_ACCESS_KEY'] = secret_key
+            
+            # Set session token if present and not already in environment
+            if 'AWS_SESSION_TOKEN' not in os.environ:
+                session_token = profile_section.get('aws_session_token')
+                if session_token:
+                    os.environ['AWS_SESSION_TOKEN'] = session_token
+    
+    # Load config file for region
+    if config_file.exists():
+        config_parser = ConfigParser()
+        config_parser.read(config_file)
+        
+        # Config file uses 'profile default' format, but also supports 'default'
+        config_profile = f'profile {profile}' if profile != 'default' else profile
+        if config_profile in config_parser:
+            config_section = config_parser[config_profile]
+        elif profile in config_parser:
+            config_section = config_parser[profile]
+        else:
+            config_section = None
+        
+        if config_section:
+            # Set region if not already in environment
+            if 'AWS_DEFAULT_REGION' not in os.environ:
+                region = config_section.get('region')
+                if region:
+                    os.environ['AWS_DEFAULT_REGION'] = region
 
 class SimpleNovaSonic:
     def __init__(self, model_id='amazon.nova-2-sonic-v1:0', region='us-west-2'):
@@ -384,9 +442,8 @@ async def main():
     print("Session ended")
 
 if __name__ == "__main__":
-    # Set AWS credentials if not using environment variables
-    # os.environ['AWS_ACCESS_KEY_ID'] = "your-access-key"
-    # os.environ['AWS_SECRET_ACCESS_KEY'] = "your-secret-key"
-    # os.environ['AWS_DEFAULT_REGION'] = "us-east-1"
+    # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
+    # This will only set environment variables if they are not already set
+    load_aws_credentials_from_config()
 
     asyncio.run(main())

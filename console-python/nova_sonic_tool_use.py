@@ -11,6 +11,8 @@ import hashlib
 import datetime
 import time
 import inspect
+from pathlib import Path
+from configparser import ConfigParser
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
@@ -25,6 +27,62 @@ OUTPUT_SAMPLE_RATE = 24000
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
 CHUNK_SIZE = 1024  # Number of frames per buffer
+
+def load_aws_credentials_from_config(profile='default'):
+    """
+    Load AWS credentials from ~/.aws/credentials and ~/.aws/config files.
+    Sets environment variables if they are not already set.
+    """
+    aws_dir = Path.home() / '.aws'
+    credentials_file = aws_dir / 'credentials'
+    config_file = aws_dir / 'config'
+    
+    # Load credentials file
+    if credentials_file.exists():
+        credentials_parser = ConfigParser()
+        credentials_parser.read(credentials_file)
+        
+        if profile in credentials_parser:
+            profile_section = credentials_parser[profile]
+            
+            # Set access key if not already in environment
+            if 'AWS_ACCESS_KEY_ID' not in os.environ:
+                access_key = profile_section.get('aws_access_key_id')
+                if access_key:
+                    os.environ['AWS_ACCESS_KEY_ID'] = access_key
+            
+            # Set secret key if not already in environment
+            if 'AWS_SECRET_ACCESS_KEY' not in os.environ:
+                secret_key = profile_section.get('aws_secret_access_key')
+                if secret_key:
+                    os.environ['AWS_SECRET_ACCESS_KEY'] = secret_key
+            
+            # Set session token if present and not already in environment
+            if 'AWS_SESSION_TOKEN' not in os.environ:
+                session_token = profile_section.get('aws_session_token')
+                if session_token:
+                    os.environ['AWS_SESSION_TOKEN'] = session_token
+    
+    # Load config file for region
+    if config_file.exists():
+        config_parser = ConfigParser()
+        config_parser.read(config_file)
+        
+        # Config file uses 'profile default' format, but also supports 'default'
+        config_profile = f'profile {profile}' if profile != 'default' else profile
+        if config_profile in config_parser:
+            config_section = config_parser[config_profile]
+        elif profile in config_parser:
+            config_section = config_parser[profile]
+        else:
+            config_section = None
+        
+        if config_section:
+            # Set region if not already in environment
+            if 'AWS_DEFAULT_REGION' not in os.environ:
+                region = config_section.get('region')
+                if region:
+                    os.environ['AWS_DEFAULT_REGION'] = region
 
 # Debug mode flag
 DEBUG = False
@@ -389,7 +447,7 @@ class BedrockStreamManager:
         }
         return json.dumps(tool_result_event)
    
-    def __init__(self, model_id='amazon.nova-sonic-v1:0', region='us-east-1'):
+    def __init__(self, model_id='amazon.nova-2-sonic-v1:0', region='us-west-2'):
         """Initialize the stream manager."""
         self.model_id = model_id
         self.region = region
@@ -929,7 +987,7 @@ async def main(debug=False):
     DEBUG = debug
 
     # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-sonic-v1:0', region='us-east-1')
+    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
 
     # Create audio streamer
     audio_streamer = AudioStreamer(stream_manager)
@@ -954,10 +1012,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Nova Sonic Python Streaming')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     args = parser.parse_args()
-    # Set your AWS credentials here or use environment variables
-    # os.environ['AWS_ACCESS_KEY_ID'] = "AWS_ACCESS_KEY_ID"
-    # os.environ['AWS_SECRET_ACCESS_KEY'] = "AWS_SECRET_ACCESS_KEY"
-    # os.environ['AWS_DEFAULT_REGION'] = "us-east-1"
+    # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
+    # This will only set environment variables if they are not already set
+    load_aws_credentials_from_config()
 
     # Run the main function
     try:
