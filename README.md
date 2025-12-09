@@ -6,7 +6,15 @@
 pip install aws_sdk_bedrock_runtime portaudio
 ```
 
+Mac에서는 아래와 같이 portaudio을 설치합니다.
 
+```python
+brew install portaudio
+```
+
+```text
+source .venv/bin/activate && python nova_sonic_simple.py
+```
 
 [Introducing gpt-realtime in the API](https://www.youtube.com/watch?v=nfBbmtMJhX0)
 
