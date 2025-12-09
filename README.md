@@ -3,9 +3,8 @@
 여기서는 Speech to Speech의 구현에 대해 정리합니다.
 
 ```text
-pip install aws_sdk_bedrock_runtime
+pip install aws_sdk_bedrock_runtime portaudio
 ```
-
 
 
 
