@@ -13,6 +13,8 @@ speech-to-speech voice agent:
 
 ## Reference 
 
+[Amazon Bedrock Runtime Client](https://pypi.org/project/aws_sdk_bedrock_runtime/)
+
 [Unlocking Voice Interaction with LangGraph Agents](https://www.youtube.com/watch?v=xM67AJy1aL8): voice를 text로 변환하여 LangGraph agent를 활용
 
 [Task mAIstro](https://github.com/langchain-ai/task_mAIstro): LangGraph 프로젝트, ElevenLabs로 text-to-speech 처리
