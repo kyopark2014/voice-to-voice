@@ -181,20 +181,20 @@ class SimpleNovaSonic:
         #     "When reading order numbers, please read each digit individually, separated by pauses. For example, order #1234 should be read as 'order number one-two-three-four' rather than 'order number one thousand two hundred thirty-four'."
         # )
 
-        # system_prompt = (
-        #     "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
-        #     "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
-        #     "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
-            
-        # )
-
         system_prompt = (
-            "Tu es une experte en voyage et ton nom est Seoyeon. Tu veux avoir une conversation détendue."
-            "Réponds toujours aux questions de l'utilisateur en une seule phrase."
-            "Réponds de manière aussi brève que possible jusqu'à ce que l'utilisateur demande plus de détails."
-            "Réponds toujours en français, même si la question est posée en coréen."
+            "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
+            "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
+            "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
             
         )
+
+        # system_prompt = (
+        #     "Tu es une experte en voyage et ton nom est Seoyeon. Tu veux avoir une conversation détendue."
+        #     "Réponds toujours aux questions de l'utilisateur en une seule phrase."
+        #     "Réponds de manière aussi brève que possible jusqu'à ce que l'utilisateur demande plus de détails."
+        #     "Réponds toujours en français, même si la question est posée en coréen."
+            
+        # )
 
 
         text_input = f'''
@@ -319,17 +319,21 @@ class SimpleNovaSonic:
                 
                 if result.value and result.value.bytes_:
                     response_data = result.value.bytes_.decode('utf-8')
-                    json_data = json.loads(response_data)
+                    json_data = json.loads(response_data)                    
                     
                     if 'event' in json_data:
                         # Handle content start event
                         if 'contentStart' in json_data['event']:
+                            # print(f"json_data: {json_data}")
                             content_start = json_data['event']['contentStart'] 
                             # set role
                             self.role = content_start['role']
+                            print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                            
                             # Check for speculative content
                             if 'additionalModelFields' in content_start:
                                 additional_fields = json.loads(content_start['additionalModelFields'])
+                                print(f" additionalModelFields: {additional_fields}")
                                 if additional_fields.get('generationStage') == 'SPECULATIVE':
                                     self.display_assistant_text = True
                                 else:
@@ -346,9 +350,20 @@ class SimpleNovaSonic:
                         
                         # Handle audio output
                         elif 'audioOutput' in json_data['event']:
+                            print(f"audio...")
                             audio_content = json_data['event']['audioOutput']['content']
                             audio_bytes = base64.b64decode(audio_content)
                             await self.audio_queue.put(audio_bytes)
+
+                        elif 'completionStart' in json_data['event']:
+                            completionId = json_data['event']['completionStart']['completionId']
+                            print(f"-> completionStart: {completionId}")                            
+                        elif 'contentEnd' in json_data['event']:
+                            print(f"-> contentEnd")
+                        elif 'usageEvent' in json_data['event']:
+                            print(f"usageEvent...")
+                        else:
+                            print(f"json_data: {json_data}")
         except Exception as e:
             print(f"Error processing responses: {e}")
     
