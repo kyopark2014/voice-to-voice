@@ -159,3 +159,7 @@ contentStart로 role 정보를 확인합니다. additionalModelFields의 generat
    }
 }
 ```
+
+### completionEnd
+
+모델은 원래 식별자와 대화가 어떻게 끝났는지를 나타내는 stopReason이 포함된 completionEnd 이벤트를 전송합니다. 이 이벤트 계층 구조는 애플리케이션이 응답의 어느 부분이 함께 속하는지 추적하고 그에 따라 처리하여 여러 턴에 걸쳐 대화 컨텍스트를 유지할 수 있도록 합니다.
