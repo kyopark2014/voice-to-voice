@@ -15,6 +15,7 @@ Amazon Nova Sonic이 말하는 동안 사용자가 Nova Sonic을 중단하면 No
 
 Nova Sonic은 실시간보다 빠르게 작동하기 때문에 일부 오디오는 이미 전송되었지만 아직 재생되지 않았을 수 있습니다. 중단 알림을 통해 클라이언트 애플리케이션은 오디오 대기열을 지우고 즉시 재생을 중지하여 응답성이 뛰어난 대화 경험을 제공할 수 있습니다.
 
+promptName은 모든 대화 이벤트를 연결하고, 각 contentName은 특정 콘텐츠 블록의 경계를 표시합니다. 이 계층 구조는 모델이 상호 작용 전반에 걸쳐 적절한 컨텍스트를 유지하도록 합니다.
 
 
 ### completionStart
@@ -22,6 +23,7 @@ Nova Sonic은 실시간보다 빠르게 작동하기 때문에 일부 오디오�
 시작시 completionStart를 받습니다. contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다.
 
 Client에서 contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다. 이후 스트림으로 contentStart의 결과를 받습니다. 
+
 
 ```java
 {
