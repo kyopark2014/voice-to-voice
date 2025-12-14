@@ -124,7 +124,7 @@ class SimpleNovaSonic:
               "inferenceConfiguration": {
                 "maxTokens": 1024,
                 "topP": 0.9,
-                "temperature": 0.7
+                "temperature": 0.1
               }
             }
           }
@@ -133,6 +133,7 @@ class SimpleNovaSonic:
         await self.send_event(session_start)
         
         # Send prompt start event
+        #tiffany, amy, matthew ambre
         prompt_start = f'''
         {{
           "event": {{
@@ -146,7 +147,7 @@ class SimpleNovaSonic:
                 "sampleRateHertz": 24000,
                 "sampleSizeBits": 16,
                 "channelCount": 1,
-                "voiceId": "matthew",
+                "voiceId": "ambre",
                 "encoding": "base64",
                 "audioType": "SPEECH"
               }}
@@ -175,8 +176,25 @@ class SimpleNovaSonic:
         '''
         await self.send_event(text_content_start)
         
-        system_prompt = "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
-        
+        # system_prompt = (
+        #     "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
+        #     "When reading order numbers, please read each digit individually, separated by pauses. For example, order #1234 should be read as 'order number one-two-three-four' rather than 'order number one thousand two hundred thirty-four'."
+        # )
+
+        # system_prompt = (
+        #     "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
+        #     "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
+        #     "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
+            
+        # )
+
+        system_prompt = (
+            "Tu es une experte en voyage et ton nom est Seoyeon. Tu veux avoir une conversation détendue."
+            "Réponds toujours aux questions de l'utilisateur en une seule phrase."
+            "Réponds de manière aussi brève que possible jusqu'à ce que l'utilisateur demande plus de détails."
+            "Réponds toujours en français, même si la question est posée en coréen."
+            
+        )
 
 
         text_input = f'''

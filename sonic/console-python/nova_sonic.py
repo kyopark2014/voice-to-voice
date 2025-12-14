@@ -229,7 +229,7 @@ class BedrockStreamManager:
         }
     }'''
 
-    def __init__(self, model_id='amazon.nova-sonic-v1:0', region='us-east-1'):
+    def __init__(self, model_id='amazon.nova-2-sonic-v1:0', region='us-east-1'):
         """Initialize the stream manager."""
         self.model_id = model_id
         self.region = region
@@ -541,12 +541,23 @@ class AudioStreamer:
 
     def input_callback(self, in_data, frame_count, time_info, status):
         """Callback function that schedules audio processing in the asyncio event loop"""
-        if self.is_streaming and in_data:
-            # Schedule the task in the event loop
-            asyncio.run_coroutine_threadsafe(
-                self.process_input_audio(in_data), 
-                self.loop
-            )
+        if status:
+            debug_print(f"Input callback status: {status}")
+        
+        if not self.is_streaming:
+            debug_print(f"Input callback called but is_streaming is False")
+            return (None, pyaudio.paContinue)
+        
+        if not in_data:
+            debug_print("Input callback called but in_data is None or empty")
+            return (None, pyaudio.paContinue)
+        
+        debug_print(f"Input callback received {len(in_data)} bytes of audio data")
+        # Schedule the task in the event loop
+        asyncio.run_coroutine_threadsafe(
+            self.process_input_audio(in_data), 
+            self.loop
+        )
         return (None, pyaudio.paContinue)
 
     async def process_input_audio(self, audio_data):

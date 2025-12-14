@@ -541,7 +541,7 @@ class BedrockStreamManager:
 
             history_content_name = str(uuid.uuid4())
             history_content_start = self.TEXT_CONTENT_START_EVENT % (self.prompt_name, history_content_name, "USER")
-            history_content = self.chat_prompt("my name is osman", history_content_name)
+            history_content = self.chat_prompt("my name is 경수", history_content_name)
             history_content_end = self.CONTENT_END_EVENT % (self.prompt_name, history_content_name)
 
             
@@ -584,8 +584,26 @@ class BedrockStreamManager:
             debug_print("Stream not initialized or closed")
             return
         
+        # Ensure event_json is a string
+        if isinstance(event_json, bytes):
+            # If it's already bytes, decode it first
+            try:
+                event_json = event_json.decode('utf-8')
+            except UnicodeDecodeError:
+                # Try with error handling
+                event_json = event_json.decode('utf-8', errors='replace')
+        elif not isinstance(event_json, str):
+            event_json = str(event_json)
+        
+        # Encode to UTF-8 bytes
+        try:
+            event_bytes = event_json.encode('utf-8')
+        except (UnicodeEncodeError, AttributeError) as e:
+            debug_print(f"Error encoding event_json: {e}")
+            return
+        
         event = InvokeModelWithBidirectionalStreamInputChunk(
-            value=BidirectionalInputPayloadPart(bytes_=event_json.encode('utf-8'))
+            value=BidirectionalInputPayloadPart(bytes_=event_bytes)
         )
         
         try:
@@ -620,11 +638,31 @@ class BedrockStreamManager:
             debug_print("Stream is not active")
             return
         
+        # Ensure text is a proper UTF-8 string
+        if isinstance(text, bytes):
+            # If text is bytes, decode it
+            try:
+                text = text.decode('utf-8')
+            except UnicodeDecodeError:
+                # Try with error handling
+                text = text.decode('utf-8', errors='replace')
+        elif not isinstance(text, str):
+            text = str(text)
+        
         # Send text content start event
         await self.send_text_content_start_event()
         
-        # Send the text input event
-        text_event = self.TEXT_INPUT_EVENT % (self.prompt_name, self.text_content_name, text)
+        # Send the text input event - create JSON directly to properly handle Unicode
+        text_input_event = {
+            "event": {
+                "textInput": {
+                    "promptName": self.prompt_name,
+                    "contentName": self.text_content_name,
+                    "content": text
+                }
+            }
+        }
+        text_event = json.dumps(text_input_event, ensure_ascii=False)
         await self.send_raw_event(text_event)
         
         # Send text content end event
@@ -720,6 +758,17 @@ class BedrockStreamManager:
 
     async def send_text_with_new_content_name(self, text):
         """Send text input with a new content name for proper multi-turn conversation."""
+        # Ensure text is a proper UTF-8 string
+        if isinstance(text, bytes):
+            # If text is bytes, decode it
+            try:
+                text = text.decode('utf-8')
+            except UnicodeDecodeError:
+                # Try with error handling
+                text = text.decode('utf-8', errors='replace')
+        elif not isinstance(text, str):
+            text = str(text)
+        
         # Generate new content name for each text input
         new_text_content_name = str(uuid.uuid4())
         
@@ -731,12 +780,17 @@ class BedrockStreamManager:
         )
         await self.send_raw_event(content_start_event)
         
-        # Send the text input event
-        text_event = self.TEXT_INPUT_EVENT % (
-            self.prompt_name, 
-            new_text_content_name, 
-            text
-        )
+        # Send the text input event - create JSON directly to properly handle Unicode
+        text_input_event = {
+            "event": {
+                "textInput": {
+                    "promptName": self.prompt_name,
+                    "contentName": new_text_content_name,
+                    "content": text
+                }
+            }
+        }
+        text_event = json.dumps(text_input_event, ensure_ascii=False)
         await self.send_raw_event(text_event)
         
         # Send text content end event
@@ -1358,6 +1412,18 @@ class MixedModeHandler:
                         ),
                         timeout=None  # No timeout, but allows for cancellation
                     )
+                    
+                    # Ensure user_input is a proper UTF-8 string
+                    # Handle case where input() might return bytes or incorrectly encoded string
+                    if isinstance(user_input, bytes):
+                        try:
+                            user_input = user_input.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # Try to decode with error handling
+                            user_input = user_input.decode('utf-8', errors='replace')
+                    elif not isinstance(user_input, str):
+                        user_input = str(user_input)
+                    
                 except asyncio.CancelledError:
                     break
 
@@ -1631,6 +1697,18 @@ class TextInputHandler:
                         ),
                         timeout=None  # No timeout, but allows for cancellation
                     )
+                    
+                    # Ensure user_input is a proper UTF-8 string
+                    # Handle case where input() might return bytes or incorrectly encoded string
+                    if isinstance(user_input, bytes):
+                        try:
+                            user_input = user_input.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # Try to decode with error handling
+                            user_input = user_input.decode('utf-8', errors='replace')
+                    elif not isinstance(user_input, str):
+                        user_input = str(user_input)
+                    
                 except asyncio.CancelledError:
                     break
 

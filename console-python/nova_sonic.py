@@ -229,7 +229,7 @@ class BedrockStreamManager:
         }
     }'''
 
-    def __init__(self, model_id='amazon.nova-2-sonic-v1:0', region='us-west-2'):
+    def __init__(self, model_id='amazon.nova-sonic-v1:0', region='us-east-1'):
         """Initialize the stream manager."""
         self.model_id = model_id
         self.region = region
@@ -276,7 +276,9 @@ class BedrockStreamManager:
 
 
             self.is_active = True
-            default_system_prompt = "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
+            default_system_prompt = "You are a friendly assistant. The user and you will engage in a spoken dialog " \
+            "exchanging the transcripts of a natural real-time conversation. Keep your responses short, " \
+            "generally two or three sentences for chatty scenarios."
             
             # Send initialization events
             prompt_event = self.START_PROMPT_EVENT % self.prompt_name
@@ -682,7 +684,7 @@ async def main(debug=False):
     DEBUG = debug
 
     # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
+    stream_manager = BedrockStreamManager(model_id='amazon.nova-sonic-v1:0', region='us-east-1')
 
     # Create audio streamer
     audio_streamer = AudioStreamer(stream_manager)
