@@ -2,6 +2,16 @@
 
 여기서는 Speech to Speech의 구현에 대해 정리합니다.
 
+## 입력
+
+[양방향 API를 사용하여 입력 이벤트 처리](https://docs.aws.amazon.com/ko_kr/nova/latest/userguide/input-events.html)
+
+<img width="971" height="521" alt="image" src="https://github.com/user-attachments/assets/9c1b653e-23ad-4612-9a0a-58465461afdd" />
+
+## 스트림 출력
+
+## 설치 방법
+
 ```text
 pip install aws_sdk_bedrock_runtime portaudio
 ```
