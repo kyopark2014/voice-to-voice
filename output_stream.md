@@ -1,5 +1,80 @@
 # 출력 스트림 처리
 
+## 스트림 처리
+
+contentStart로 role 정보를 확인합니다. additionalModelFields의 generationStage가 SPECULATIVE이면 display_assistant_text를 true로 설정합니다.
+
+시작시 completionStart를 받습니다.
+
+```java
+{
+   "event":{
+      "completionStart":{
+         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
+         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
+         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c"
+      }
+   }
+}
+```
+
+스트림으로 contentStart를 받습니다.
+
+```java
+{
+   "event":{
+      "contentStart":{
+         "additionalModelFields":"{\"generationStage\":\"SPECULATIVE\"}",
+         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
+         "contentId":"0243d58d-9134-4970-9e89-896ddeb67fb7",
+         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
+         "role":"ASSISTANT",
+         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c",
+         "textOutputConfiguration":{
+            "mediaType":"text/plain"
+         },
+         "type":"TEXT"
+      }
+   }
+}
+```
+
+이때의 text는 textOutput의 content로 확인합니다.
+
+```java
+{
+   "event":{
+      "textOutput":{
+         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
+         "content":"안녕하세요! 여행 전문가 서연입니다. 여행에 대해 어떤 도움이 필요하신가요?",
+         "contentId":"0243d58d-9134-4970-9e89-896ddeb67fb7",
+         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
+         "role":"ASSISTANT",
+         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c"
+      }
+   }
+}
+```
+
+음성 대화는 completionId를 공유하고 text, audio등은 다른 contentId를 가지고 있습니다.
+
+contentEnd로 해당 completionId이 종료된것을 이해합니다.
+
+```java
+{
+   "event":{
+      "contentEnd":{
+         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
+         "contentId":"0243d58d-9134-4970-9e89-896ddeb67fb7",
+         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
+         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c",
+         "stopReason":"PARTIAL_TURN",
+         "type":"TEXT"
+      }
+   }
+}
+```
+
 ```java
 {
    "event":{
@@ -16,17 +91,7 @@
 ```
 
 
-```java
-{
-   "event":{
-      "completionStart":{
-         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
-         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
-         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c"
-      }
-   }
-}
-```
+
 
 ```java
 {
