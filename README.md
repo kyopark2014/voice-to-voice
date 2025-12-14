@@ -4,7 +4,7 @@
 
 ## 입력
 
-[양방향 API를 사용하여 입력 이벤트 처리](https://docs.aws.amazon.com/ko_kr/nova/latest/userguide/input-events.html)
+성공적인 대화형 애플리케이션을 구현하고 상호 작용 전반에 걸쳐 적절한 대화 상태를 유지하려면 올바른 이벤트 순서가 중요합니다. [양방향 API를 사용하여 입력 이벤트 처리](https://docs.aws.amazon.com/ko_kr/nova/latest/userguide/input-events.html)와 같은 형태로 동작합니다.
 
 <img width="971" height="521" alt="image" src="https://github.com/user-attachments/assets/9c1b653e-23ad-4612-9a0a-58465461afdd" />
 
