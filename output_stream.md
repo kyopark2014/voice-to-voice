@@ -15,6 +15,19 @@
 }
 ```
 
+
+```java
+{
+   "event":{
+      "completionStart":{
+         "completionId":"a16f0ca2-bb29-41a4-b9bb-728632770965",
+         "promptName":"b5e93ca7-23b1-4e91-9963-af1b5b8e640c",
+         "sessionId":"d7f50ba1-077d-469b-adac-944cb0374b9c"
+      }
+   }
+}
+```
+
 ```java
 {
    "event":{
