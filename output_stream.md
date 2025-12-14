@@ -1,8 +1,8 @@
 # 출력 스트림 처리
 
-스트림은 아래와 같이 처리 됩니다.
+스트림은 [아래](https://docs.aws.amazon.com/ko_kr/nova/latest/userguide/images/output-events.png)와 같이 처리 됩니다.
 
-<img width="850" alt="image" src="https://github.com/user-attachments/assets/2ea769f2-d201-40f5-8004-a768796c784e" />
+<img width="850" alt="image" src="https://github.com/user-attachments/assets/672aaae3-2ea5-4442-87c2-105ca28b36f3" />
 
 ## 스트림 처리
 
