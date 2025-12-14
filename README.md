@@ -35,3 +35,4 @@ speech-to-speech voice agent:
 
 [Task mAIstro](https://github.com/langchain-ai/task_mAIstro): LangGraph 프로젝트, ElevenLabs로 text-to-speech 처리
 
+[Amazon-Nova 양방향 API를 사용하여 출력 이벤트 처리](https://docs.aws.amazon.com/ko_kr/nova/latest/userguide/output-events.html)
