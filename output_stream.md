@@ -1,10 +1,20 @@
 # 출력 스트림 처리
 
+스트림은 아래와 같이 처리 됩니다.
+
+<img width="850" alt="image" src="https://github.com/user-attachments/assets/2ea769f2-d201-40f5-8004-a768796c784e" />
+
 ## 스트림 처리
 
-contentStart로 role 정보를 확인합니다. additionalModelFields의 generationStage가 SPECULATIVE이면 display_assistant_text를 true로 설정합니다.
+응답에는 자동 음성 인식(ASR) 트랜스크립션(사용자가 말한 내용), 선택적 도구 사용(외부 정보가 필요한 경우), 텍스트 응답(모델이 말하려는 내용), 오디오 응답(음성 출력) 등 여러 콘텐츠 블록이 순차적으로 포함됩니다.
 
-시작시 completionStart를 받습니다.
+ASR 트랜스크립션이 먼저 표시되어 contentStart에 role: "USER" 및 "additionalModelFields": "{\"generationStage\":\"FINAL\"}"을 사용하여 모델이 사용자 음성을 이해한 내용을 전달합니다.
+
+
+
+시작시 completionStart를 받습니다. contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다.
+
+Client에서 contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다. 이후 스트림으로 contentStart의 결과를 받습니다. 
 
 ```java
 {
@@ -18,7 +28,10 @@ contentStart로 role 정보를 확인합니다. additionalModelFields의 generat
 }
 ```
 
-스트림으로 contentStart를 받습니다.
+
+
+contentStart로 role 정보를 확인합니다. additionalModelFields의 generationStage가 SPECULATIVE로 계획된 음성의 미리 보기를 제공합니다. 이때, display_assistant_text를 true로 설정합니다.
+
 
 ```java
 {
@@ -58,7 +71,7 @@ contentStart로 role 정보를 확인합니다. additionalModelFields의 generat
 
 음성 대화는 completionId를 공유하고 text, audio등은 다른 contentId를 가지고 있습니다.
 
-contentEnd로 해당 completionId이 종료된것을 이해합니다.
+현재의 세그맨트가 종료가 될때 contentEnd를 받습니다. 이때, completionId이 종료된것을 알 수 있습니다. 
 
 ```java
 {
@@ -75,6 +88,8 @@ contentEnd로 해당 completionId이 종료된것을 이해합니다.
 }
 ```
 
+오디오 응답은 스트림 전체에서 동일한 contentId를 공유하는 base64로 인코딩된 음성 청크를 전달합니다.
+
 ```java
 {
    "event":{
@@ -90,8 +105,11 @@ contentEnd로 해당 completionId이 종료된것을 이해합니다.
 }
 ```
 
+Amazon Nova Sonic이 말하는 동안 사용자가 Nova Sonic을 중단하면 Nova Sonic은 즉시 음성 생성을 중지하고 듣기 모드로 전환한 다음, 중단 발생을 알리는 콘텐츠 알림을 전송합니다. 
 
+Nova Sonic은 실시간보다 빠르게 작동하기 때문에 일부 오디오는 이미 전송되었지만 아직 재생되지 않았을 수 있습니다. 중단 알림을 통해 클라이언트 애플리케이션은 오디오 대기열을 지우고 즉시 재생을 중지하여 응답성이 뛰어난 대화 경험을 제공할 수 있습니다.
 
+응답 처리 과정에서 토큰 소비를 추적하기 위해 usageEvent 이벤트가 전송됩니다. 이러한 이벤트에는 입력 토큰과 출력 토큰(음성 및 텍스트 모두)에 대한 자세한 지표와 그 누적 합계가 포함되어 있습니다. 각 usageEvent는 대화 흐름의 다른 이벤트와 동일한 sessionId, promptName, completionId를 유지합니다. 세부 정보 섹션에서는 토큰 사용량의 증분 변경 사항(델타)과 총합을 모두 제공하여 대화 중 사용량을 정확하게 모니터링할 수 있습니다.
 
 ```java
 {
