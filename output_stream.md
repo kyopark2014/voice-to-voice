@@ -22,7 +22,6 @@ promptName은 모든 대화 이벤트를 연결하고, 각 contentName은 특정
 
 시작시 completionStart를 받습니다. contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다.
 
-Client에서 contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다. 이후 스트림으로 contentStart의 결과를 받습니다. 
 
 
 ```java
@@ -41,6 +40,9 @@ Client에서 contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이�
 
 
 ### contentStart
+
+Client에서 contentStart는 콘텐츠 유형 및 형식, 실제 콘텐츠 이벤트를 정의합니다. 이후 스트림으로 contentStart의 결과를 받습니다. 
+
 
 contentStart로 role 정보를 확인합니다. additionalModelFields의 generationStage가 SPECULATIVE로 계획된 음성의 미리 보기를 제공합니다. 이때, display_assistant_text를 true로 설정합니다.
 
