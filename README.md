@@ -4,7 +4,7 @@
 
 ## Architecture
 
-[기본적인 구조](https://github.com/aws-samples/amazon-nova-samples/tree/main/speech-to-speech/amazon-nova-2-sonic/workshops)와 [Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/5238419f-1337-4e0f-8cd7-02239486c40d/en-US/01-core-functions/00-setup-coded는 아래와 같습니다.
+[기본적인 구조](https://github.com/aws-samples/amazon-nova-samples/tree/main/speech-to-speech/amazon-nova-2-sonic/workshops)와 [Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/5238419f-1337-4e0f-8cd7-02239486c40d/en-US/01-core-functions/00-setup-coded)는 아래와 같습니다.
 
 <img width="680" height="338" alt="image" src="https://github.com/user-attachments/assets/d6944f50-8b7c-464a-b143-a59a3214502e" />
 
