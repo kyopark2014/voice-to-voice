@@ -427,6 +427,7 @@ class SimpleNovaSonic:
         try:
             while self.is_active:
                 audio_data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                print(f"-> audioInput: {audio_data[:10]}...")
                 await self.send_audio_chunk(audio_data)
                 await asyncio.sleep(0.01)
         except Exception as e:

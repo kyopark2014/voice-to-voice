@@ -85,7 +85,7 @@ def load_aws_credentials_from_config(profile='default'):
                     os.environ['AWS_DEFAULT_REGION'] = region
 
 # Debug mode flag
-DEBUG = False
+DEBUG = True
 
 def debug_print(message):
     """Print only if debug mode is enabled"""
@@ -571,6 +571,8 @@ class BedrockStreamManager:
                 data = await self.audio_input_queue.get()
                 
                 audio_bytes = data.get('audio_bytes')
+                print(f"audio queue: {data[:10]}")                
+
                 if not audio_bytes:
                     debug_print("No audio bytes received")
                     continue
