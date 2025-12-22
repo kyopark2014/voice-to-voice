@@ -153,94 +153,7 @@ class ToolProcessor:
                 "day": pst_date.day,
                 "dayOfWeek": pst_date.strftime("%A").upper(),
                 "timezone": "PST"
-            }
-        
-        elif tool == "trackordertool":
-            # Simulate a long-running operation
-            debug_print(f"TrackOrderTool starting operation that will take time...")
-            await asyncio.sleep(10)  # Non-blocking sleep to simulate processing time
-            
-            # Extract order ID from toolUseContent
-            content = tool_content.get("content", {})
-            content_data = json.loads(content)
-            order_id = content_data.get("orderId", "")
-            request_notifications = content_data.get("requestNotifications", False)
-            
-            # Convert order_id to string if it's an integer
-            if isinstance(order_id, int):
-                order_id = str(order_id)
-            # Validate order ID format
-            if not order_id or not isinstance(order_id, str):
-                return {
-                    "error": "Invalid order ID format",
-                    "orderStatus": "",
-                    "estimatedDelivery": "",
-                    "lastUpdate": ""
-                }
-            
-            # Create deterministic randomness based on order ID
-            # This ensures the same order ID always returns the same status
-            seed = int(hashlib.md5(order_id.encode(), usedforsecurity=False).hexdigest(), 16) % 10000
-            random.seed(seed)
-            
-            # Rest of the order tracking logic
-            statuses = [
-                "Order received", 
-                "Processing", 
-                "Preparing for shipment",
-                "Shipped",
-                "In transit", 
-                "Out for delivery",
-                "Delivered",
-                "Delayed"
-            ]
-            
-            weights = [10, 15, 15, 20, 20, 10, 5, 3]
-            status = random.choices(statuses, weights=weights, k=1)[0]
-            
-            # Generate delivery date logic
-            today = datetime.datetime.now()
-            if status == "Delivered":
-                delivery_days = -random.randint(0, 3)
-                estimated_delivery = (today + datetime.timedelta(days=delivery_days)).strftime("%Y-%m-%d")
-            elif status == "Out for delivery":
-                estimated_delivery = today.strftime("%Y-%m-%d")
-            else:
-                delivery_days = random.randint(1, 10)
-                estimated_delivery = (today + datetime.timedelta(days=delivery_days)).strftime("%Y-%m-%d")
-
-            # Handle notification request
-            notification_message = ""
-            if request_notifications and status != "Delivered":
-                notification_message = f"You will receive notifications for order {order_id}"
-
-            # Return tracking information
-            tracking_info = {
-                "orderStatus": status,
-                "orderNumber": order_id,
-                "notificationStatus": notification_message
-            }
-
-            # Add appropriate fields based on status
-            if status == "Delivered":
-                tracking_info["deliveredOn"] = estimated_delivery
-            elif status == "Out for delivery":
-                tracking_info["expectedDelivery"] = "Today"
-            else:
-                tracking_info["estimatedDelivery"] = estimated_delivery
-
-            # Add location information based on status
-            if status == "In transit":
-                tracking_info["currentLocation"] = "Distribution Center"
-            elif status == "Delivered":
-                tracking_info["deliveryLocation"] = "Front Door"
-                
-            # Add additional info for delayed status
-            if status == "Delayed":
-                tracking_info["additionalInfo"] = "Weather delays possible"
-                
-            debug_print(f"TrackOrderTool completed successfully")
-            return tracking_info
+            }        
         else:
             return {
                 "error": f"Unsupported tool: {tool_name}"
@@ -274,7 +187,7 @@ class BedrockStreamManager:
             }
         }
     
-        return json.dumps(systemPrompt)
+        return json.dumps(systemPrompt, ensure_ascii=False)
     
     def chat_prompt(self, content, content_name ):
         """Create a system prompt"""
@@ -288,7 +201,7 @@ class BedrockStreamManager:
             }
         }
     
-        return json.dumps(systemPrompt)
+        return json.dumps(systemPrompt, ensure_ascii=False)
     
     def start_prompt(self):
         """Create a promptStart event"""
@@ -523,8 +436,12 @@ class BedrockStreamManager:
             self.stream_response = await time_it_async("invoke_model_with_bidirectional_stream", lambda : self.bedrock_client.invoke_model_with_bidirectional_stream( InvokeModelWithBidirectionalStreamOperationInput(model_id=self.model_id)))
 
             self.is_active = True
-            default_system_prompt = "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
-            
+            #default_system_prompt = "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
+            default_system_prompt = (
+                "당신은 실시간 번역기입니다." 
+                "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
+                "번역한 내용만 답변합니다."
+            )
             default_speech_prompt = ""
             # example speech prompt for indian
             #default_speech_prompt = "If the input audio/speech contains hindi, then the transcription and response should be in All Devanagari script (Hindi)."
@@ -538,14 +455,8 @@ class BedrockStreamManager:
             speech_content_start = self.TEXT_CONTENT_START_EVENT % (self.prompt_name, speech_content_name, "SYSTEM_SPEECH")
             speech_content = self.TEXT_INPUT_EVENT % (self.prompt_name, speech_content_name, default_speech_prompt)
             speech_content_end = self.CONTENT_END_EVENT % (self.prompt_name, speech_content_name)
-
-            history_content_name = str(uuid.uuid4())
-            history_content_start = self.TEXT_CONTENT_START_EVENT % (self.prompt_name, history_content_name, "USER")
-            history_content = self.chat_prompt("my name is 경수", history_content_name)
-            history_content_end = self.CONTENT_END_EVENT % (self.prompt_name, history_content_name)
-
             
-            init_events = [self.START_SESSION_EVENT, prompt_event, text_content_start, text_content, text_content_end, speech_content_start, speech_content, speech_content_end, history_content_start, history_content, history_content_end]
+            init_events = [self.START_SESSION_EVENT, prompt_event, text_content_start, text_content, text_content_end, speech_content_start, speech_content, speech_content_end]
             
             for event in init_events:
                 await self.send_raw_event(event)
@@ -1268,378 +1179,6 @@ class SilentAudioStreamer(AudioStreamer):
         
         await self.stream_manager.close()
 
-class MixedModeHandler:
-    """Handles mixed mode where real audio streaming happens with text input overlay."""
-    
-    def __init__(self, stream_manager):
-        self.stream_manager = stream_manager
-        self.is_active = False
-        self.loop = asyncio.get_event_loop()
-        self.waiting_for_response = False
-        
-        # Audio components
-        self.p = None
-        self.input_stream = None
-        self.output_stream = None
-        
-        # Tasks
-        self.output_task = None
-        self.text_input_task = None
-    
-    def _initialize_audio(self):
-        """Initialize PyAudio components for mixed mode."""
-        debug_print("MixedModeHandler Initializing PyAudio...")
-        self.p = time_it("MixedModeHandlerInitPyAudio", pyaudio.PyAudio)
-        debug_print("MixedModeHandler PyAudio initialized")
-
-        # Initialize separate streams for input and output
-        # Input stream with callback for microphone
-        debug_print("Opening input audio stream...")
-        self.input_stream = time_it("MixedModeHandlerOpenInputAudio", lambda: self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=INPUT_SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=CHUNK_SIZE,
-            stream_callback=self.input_callback
-        ))
-        debug_print("input audio stream opened")
-
-        # Output stream for direct writing (no callback)
-        debug_print("Opening output audio stream...")
-        self.output_stream = time_it("MixedModeHandlerOpenOutputAudio", lambda: self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=OUTPUT_SAMPLE_RATE,
-            output=True,
-            frames_per_buffer=CHUNK_SIZE
-        ))
-        debug_print("output audio stream opened")
-
-    def input_callback(self, in_data, frame_count, time_info, status):
-        """Callback function that schedules audio processing in the asyncio event loop"""
-        if self.is_active and in_data:
-            # Schedule the task in the event loop
-            asyncio.run_coroutine_threadsafe(
-                self.process_input_audio(in_data), 
-                self.loop
-            )
-        return (None, pyaudio.paContinue)
-
-    async def process_input_audio(self, audio_data):
-        """Process a single audio chunk directly"""
-        try:
-            # Send audio to Bedrock immediately
-            self.stream_manager.add_audio_chunk(audio_data)
-        except Exception as e:
-            if self.is_active:
-                print(f"Error processing input audio: {e}")
-    
-    async def play_output_audio(self):
-        """Play audio responses from Nova Sonic"""
-        while self.is_active:
-            try:
-                # Check for barge-in flag
-                if self.stream_manager.barge_in:
-                    # Clear the audio queue
-                    while not self.stream_manager.audio_output_queue.empty():
-                        try:
-                            self.stream_manager.audio_output_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    self.stream_manager.barge_in = False
-                    # Small sleep after clearing
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                # Get audio data from the stream manager's queue
-                audio_data = await asyncio.wait_for(
-                    self.stream_manager.audio_output_queue.get(),
-                    timeout=0.1
-                )
-                
-                if audio_data and self.is_active:
-                    # Write directly to the output stream in smaller chunks
-                    chunk_size = CHUNK_SIZE  # Use the same chunk size as the stream
-                    
-                    # Write the audio data in chunks to avoid blocking too long
-                    for i in range(0, len(audio_data), chunk_size):
-                        if not self.is_active:
-                            break
-                        
-                        end = min(i + chunk_size, len(audio_data))
-                        chunk = audio_data[i:end]
-                        
-                        # Create a new function that captures the chunk by value
-                        def write_chunk(data):
-                            return self.output_stream.write(data)
-                        
-                        # Pass the chunk to the function
-                        await asyncio.get_event_loop().run_in_executor(None, write_chunk, chunk)
-                        
-                        # Brief yield to allow other tasks to run
-                        await asyncio.sleep(0.001)
-                    
-            except asyncio.TimeoutError:
-                # No data available within timeout, just continue
-                continue
-            except Exception as e:
-                if self.is_active:
-                    print(f"Error playing output audio: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-                await asyncio.sleep(0.05)
-    
-    async def handle_text_input(self):
-        """Handle text input in mixed mode."""
-        print("\n=== Mixed Mode Active ===")
-        print("🎤 Audio streaming is active - speak into your microphone")
-        print("⌨️  You can also type messages:")
-        print("   - Type messages and press Enter to send text")
-        print("   - Press Enter during assistant response to interrupt")
-        print("   - Type 'quit' or 'exit' to end the session")
-        print("   - Type 'help' to see commands again")
-        print("\nUse both voice and text simultaneously!\n")
-
-        while self.is_active:
-            try:
-                # Get user input (non-blocking with timeout to allow interruption)
-                try:
-                    user_input = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: input("You: ")
-                        ),
-                        timeout=None  # No timeout, but allows for cancellation
-                    )
-                    
-                    # Ensure user_input is a proper UTF-8 string
-                    # Handle case where input() might return bytes or incorrectly encoded string
-                    if isinstance(user_input, bytes):
-                        try:
-                            user_input = user_input.decode('utf-8')
-                        except UnicodeDecodeError:
-                            # Try to decode with error handling
-                            user_input = user_input.decode('utf-8', errors='replace')
-                    elif not isinstance(user_input, str):
-                        user_input = str(user_input)
-                    
-                except asyncio.CancelledError:
-                    break
-
-                # Handle special commands
-                if user_input.lower() in ['quit', 'exit']:
-                    print("\n👋 Goodbye! Ending mixed mode session...")
-                    # Don't set is_active = False here - let close() handle it
-                    break
-                elif user_input.lower() == 'help':
-                    print("\n=== Mixed Mode Commands ===")
-                    print("🎤 Audio streaming is active - speak into your microphone")
-                    print("⌨️  Text input commands:")
-                    print("   - Type messages and press Enter to send text")
-                    print("   - Press Enter during assistant response to interrupt")
-                    print("   - Type 'quit' or 'exit' to end the session")
-                    print("   - Type 'help' to see this menu again")
-                    print("\nYou can use both voice and text simultaneously!\n")
-                    continue
-                elif user_input.strip() == '' and self.waiting_for_response:
-                    # Interrupt current response
-                    print("\n[Interrupting assistant response...]")
-                    self.stream_manager.barge_in = True
-                    self.waiting_for_response = False
-                    continue
-                elif user_input.strip() == '':
-                    continue
-                
-                # Send text input to Nova Sonic with new content name for each message
-                self.waiting_for_response = True
-                await self.stream_manager.send_text_with_new_content_name(user_input)
-                
-                # Brief pause to allow response to start
-                await asyncio.sleep(0.1)
-               
-                
-            except KeyboardInterrupt:
-                print("\nMixed mode session interrupted by user")
-                break
-            except Exception as e:
-                print(f"Error in mixed mode text input: {e}")
-                if DEBUG:
-                    import traceback
-                    traceback.print_exc()
-                self.waiting_for_response = False
-    
-    def _initialize_audio(self):
-        """Initialize PyAudio and audio streams."""
-        debug_print("MixedModeHandler Initializing PyAudio...")
-        self.p = time_it("MixedModeHandlerInitPyAudio", pyaudio.PyAudio)
-        debug_print("MixedModeHandler PyAudio initialized")
-
-        # Initialize input stream with callback for microphone
-        debug_print("Opening input audio stream...")
-        self.input_stream = time_it("MixedModeHandlerOpenInputAudio", lambda: self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=INPUT_SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=CHUNK_SIZE,
-            stream_callback=self.input_callback
-        ))
-        debug_print("input audio stream opened")
-
-        # Initialize output stream for audio responses
-        debug_print("Opening output audio stream...")
-        self.output_stream = time_it("MixedModeHandlerOpenOutputAudio", lambda: self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=OUTPUT_SAMPLE_RATE,
-            output=True,
-            frames_per_buffer=CHUNK_SIZE
-        ))
-        debug_print("output audio stream opened")
-
-    def input_callback(self, in_data, frame_count, time_info, status):
-        """Callback function that schedules audio processing in the asyncio event loop"""
-        if self.is_active and in_data:
-            # Schedule the task in the event loop
-            asyncio.run_coroutine_threadsafe(
-                self.process_input_audio(in_data), 
-                self.loop
-            )
-        return (None, pyaudio.paContinue)
-
-    async def process_input_audio(self, audio_data):
-        """Process a single audio chunk directly"""
-        try:
-            # Send audio to Bedrock immediately
-            self.stream_manager.add_audio_chunk(audio_data)
-        except Exception as e:
-            if self.is_active:
-                print(f"Error processing input audio: {e}")
-    
-    async def play_output_audio(self):
-        """Play audio responses from Nova Sonic"""
-        while self.is_active:
-            try:
-                # Check for barge-in flag
-                if self.stream_manager.barge_in:
-                    # Clear the audio queue
-                    while not self.stream_manager.audio_output_queue.empty():
-                        try:
-                            self.stream_manager.audio_output_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    self.stream_manager.barge_in = False
-                    # Small sleep after clearing
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                # Get audio data from the stream manager's queue
-                audio_data = await asyncio.wait_for(
-                    self.stream_manager.audio_output_queue.get(),
-                    timeout=0.1
-                )
-                
-                if audio_data and self.is_active:
-                    # Write directly to the output stream in smaller chunks
-                    chunk_size = CHUNK_SIZE  # Use the same chunk size as the stream
-                    
-                    # Write the audio data in chunks to avoid blocking too long
-                    for i in range(0, len(audio_data), chunk_size):
-                        if not self.is_active:
-                            break
-                        
-                        end = min(i + chunk_size, len(audio_data))
-                        chunk = audio_data[i:end]
-                        
-                        # Create a new function that captures the chunk by value
-                        def write_chunk(data):
-                            return self.output_stream.write(data)
-                        
-                        # Pass the chunk to the function
-                        await asyncio.get_event_loop().run_in_executor(None, write_chunk, chunk)
-                        
-                        # Brief yield to allow other tasks to run
-                        await asyncio.sleep(0.001)
-                    
-            except asyncio.TimeoutError:
-                # No data available within timeout, just continue
-                continue
-            except Exception as e:
-                if self.is_active:
-                    print(f"Error playing output audio: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-                await asyncio.sleep(0.05)
-    
-    async def start_mixed_mode(self):
-        """Start mixed mode with both audio streaming and text input."""
-        if self.is_active:
-            return
-        
-        # Initialize audio components
-        self._initialize_audio()
-        
-        # Send audio content start event
-        await time_it_async("send_audio_content_start_event", lambda: self.stream_manager.send_audio_content_start_event())
-        
-        self.is_active = True
-        
-        # Start the input stream if not already started
-        if not self.input_stream.is_active():
-            self.input_stream.start_stream()
-        
-        # Start processing tasks
-        self.output_task = asyncio.create_task(self.play_output_audio())
-        self.text_input_task = asyncio.create_task(self.handle_text_input())
-        
-        print("\n🎤 Mixed mode started! Speak into your microphone or type messages below.")
-        
-        # Wait for text input task to complete (user quits or interrupts)
-        try:
-            await self.text_input_task
-        except asyncio.CancelledError:
-            pass
-        
-        # Stop mixed mode
-        await self.stop_mixed_mode()
-    
-    async def stop_mixed_mode(self):
-        """Stop mixed mode and clean up resources."""
-        if not self.is_active:
-            return
-            
-        self.is_active = False
-
-        # Cancel the tasks
-        tasks = []
-        if self.output_task and not self.output_task.done():
-            tasks.append(self.output_task)
-        
-        if self.text_input_task and not self.text_input_task.done():
-            tasks.append(self.text_input_task)
-        
-        for task in tasks:
-            task.cancel()
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Stop and close the streams
-        if self.input_stream:
-            if self.input_stream.is_active():
-                self.input_stream.stop_stream()
-            self.input_stream.close()
-        
-        if self.output_stream:
-            if self.output_stream.is_active():
-                self.output_stream.stop_stream()
-            self.output_stream.close()
-        
-        if self.p:
-            self.p.terminate()
-        
-        await self.stream_manager.close()
 
 class TextInputHandler:
     """Handles text input from terminal and manages conversation flow with interruption support."""
@@ -1783,123 +1322,12 @@ async def main_with_mode_selection(debug=False):
     # Initialize the stream
     await time_it_async("initialize_stream", stream_manager.initialize_stream)
 
+    time.sleep(1)
+
     try:
         print("Starting text-only mode...")
         text_handler = TextInputHandler(stream_manager)
         time.sleep(1)
-        await text_handler.start_text_conversation()
-        # print("Starting text-only mode...")
-        # text_handler = TextInputHandler(stream_manager)
-        # await text_handler.start_text_conversation()
-                    
-
-        # print("\n=== Nova Sonic Interactive Chat ===")
-        # print("Choose your interaction mode:")
-        # print("1. Text chat (type messages)")
-        # print("2. Audio chat (speak into microphone)")
-        # print("3. Mixed mode (real audio streaming + text input overlay)")
-        
-        # while True:
-        #     try:
-                
-
-                
-
-        #         choice = await asyncio.get_event_loop().run_in_executor(
-        #             None, 
-        #             lambda: input("\nEnter your choice (1-3): ")
-        #         )
-                
-        #         if choice == '1':
-        #             # Text-only mode
-        #             print("Starting text-only mode...")
-        #             text_handler = TextInputHandler(stream_manager)
-        #             await text_handler.start_text_conversation()
-        #             break
-        #         elif choice == '2':
-        #             # Audio-only mode
-        #             audio_streamer = AudioStreamer(stream_manager)
-        #             await audio_streamer.start_streaming()
-        #             break
-        #         elif choice == '3':
-        #             # Mixed mode (real audio streaming + text input overlay)
-        #             mixed_handler = MixedModeHandler(stream_manager)
-        #             await mixed_handler.start_mixed_mode()
-        #             break
-        #         else:
-        #             print("Invalid choice. Please enter 1, 2, or 3.")
-                    
-        #     except KeyboardInterrupt:
-        #         print("\nExiting...")
-        #         break
-        
-    except KeyboardInterrupt:
-        print("Interrupted by user")
-    finally:
-        # Clean up
-        await stream_manager.close()
-
-
-async def main_mixed_mode(debug=False):
-    """Main function with mixed mode (text and audio)."""
-    global DEBUG
-    DEBUG = debug
-
-    # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
-
-    # Initialize the stream
-    await time_it_async("initialize_stream", stream_manager.initialize_stream)
-
-    try:
-        mixed_handler = MixedModeHandler(stream_manager)
-        await mixed_handler.start_mixed_mode()
-        
-    except KeyboardInterrupt:
-        print("Interrupted by user")
-    finally:
-        # Clean up
-        await stream_manager.close()
-
-
-async def main_audio_only(debug=False):
-    """Original main function for audio-only mode."""
-    global DEBUG
-    DEBUG = debug
-
-    # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
-
-    # Create audio streamer
-    audio_streamer = AudioStreamer(stream_manager)
-
-    # Initialize the stream
-    await time_it_async("initialize_stream", stream_manager.initialize_stream)
-
-    try:
-        # This will run until the user presses Enter
-        await audio_streamer.start_streaming()
-        
-    except KeyboardInterrupt:
-        print("Interrupted by user")
-    finally:
-        # Clean up
-        await audio_streamer.stop_streaming()
-
-async def main_text_only(debug=False):
-    """Main function for text-only mode."""
-    global DEBUG
-    DEBUG = debug
-
-    # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
-
-    # Initialize the stream
-    await time_it_async("initialize_stream", stream_manager.initialize_stream)
-
-    try:
-        # Start text conversation
-        text_handler = TextInputHandler(stream_manager)
         await text_handler.start_text_conversation()
         
     except KeyboardInterrupt:
@@ -1909,13 +1337,9 @@ async def main_text_only(debug=False):
         await stream_manager.close()
 
 if __name__ == "__main__":
-    # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
-    # This will only set environment variables if they are not already set
     load_aws_credentials_from_config()
 
-    # Run the appropriate main function based on mode
     try:
-        # asyncio.run(main_text_only(debug=False))
         asyncio.run(main_with_mode_selection(debug=False))
     except Exception as e:
         print(f"Application error: {e}")

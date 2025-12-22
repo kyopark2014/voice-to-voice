@@ -1,0 +1,8 @@
+{
+  "projectName": "speech-to-speech",
+  "region": "us-west-2",
+  "accountId": "262976740991",
+  "knowledge_base_name": "speech-to-speech",
+  "knowledge_base_id": "",
+  "secret_name": "speech-to-speech/credentials"
+}
