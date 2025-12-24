@@ -90,9 +90,6 @@ role = None
 display_assistant_text = False
 is_active = False
 sonic_client = None
-run_task = None  # 백그라운드에서 실행되는 run() 태스크
-playback_task = None  # 오디오 재생 태스크
-silent_audio_task = None  # 무음 오디오 전송 태스크
 
 def _initialize_client(region):
     """Initialize the Bedrock client."""
@@ -380,73 +377,60 @@ async def end_session():
 
 async def _process_responses():
     """Process responses from the stream."""
-    global is_active, role, display_assistant_text
     try:
         while is_active:
-            try:
-                output = await stream.await_output()
-                result = await output[1].receive()
+            output = await stream.await_output()
+            result = await output[1].receive()
+            
+            if result.value and result.value.bytes_:
+                response_data = result.value.bytes_.decode('utf-8')
+                json_data = json.loads(response_data)                    
                 
-                if result.value and result.value.bytes_:
-                    response_data = result.value.bytes_.decode('utf-8')
-                    json_data = json.loads(response_data)                    
-                    
-                    if 'event' in json_data:
-                        # Handle content start event
-                        if 'contentStart' in json_data['event']:
-                            # print(f"json_data: {json_data}")
-                            content_start = json_data['event']['contentStart'] 
-                            # set role
-                            role = content_start['role']
-                            # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
-                            
-                            # Check for speculative content
-                            if 'additionalModelFields' in content_start:
-                                additional_fields = json.loads(content_start['additionalModelFields'])
-                                #print(f" additionalModelFields: {additional_fields}")
-                                if additional_fields.get('generationStage') == 'SPECULATIVE':
-                                    display_assistant_text = True
-                                else:
-                                    display_assistant_text = False
-                                
-                        # Handle text output event
-                        elif 'textOutput' in json_data['event']:
-                            text = json_data['event']['textOutput']['content']    
-                            
-                            if (role == "ASSISTANT" and display_assistant_text):
-                                print(f"Assistant: {text}")
-                            elif role == "USER":
-                                print(f"User: {text}")
+                if 'event' in json_data:
+                    # Handle content start event
+                    if 'contentStart' in json_data['event']:
+                        # print(f"json_data: {json_data}")
+                        content_start = json_data['event']['contentStart'] 
+                        # set role
+                        role = content_start['role']
+                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
-                        # Handle audio output
-                        elif 'audioOutput' in json_data['event']:
-                            # print(f"audio...")
-                            audio_content = json_data['event']['audioOutput']['content']
-                            audio_bytes = base64.b64decode(audio_content)
-                            await audio_queue.put(audio_bytes)
+                        # Check for speculative content
+                        if 'additionalModelFields' in content_start:
+                            additional_fields = json.loads(content_start['additionalModelFields'])
+                            #print(f" additionalModelFields: {additional_fields}")
+                            if additional_fields.get('generationStage') == 'SPECULATIVE':
+                                display_assistant_text = True
+                            else:
+                                display_assistant_text = False
+                            
+                    # Handle text output event
+                    elif 'textOutput' in json_data['event']:
+                        text = json_data['event']['textOutput']['content']    
+                        
+                        if (role == "ASSISTANT" and display_assistant_text):
+                            print(f"Assistant: {text}")
+                        elif role == "USER":
+                            print(f"User: {text}")
+                    
+                    # Handle audio output
+                    elif 'audioOutput' in json_data['event']:
+                        # print(f"audio...")
+                        audio_content = json_data['event']['audioOutput']['content']
+                        audio_bytes = base64.b64decode(audio_content)
+                        await audio_queue.put(audio_bytes)
 
-                        # elif 'completionStart' in json_data['event']:
-                        #     completionId = json_data['event']['completionStart']['completionId']
-                        #     print(f"-> completionStart: {completionId}")                            
-                        # elif 'contentEnd' in json_data['event']:
-                        #     print(f"-> contentEnd")
-                        #elif 'usageEvent' in json_data['event']:
-                        #    print(f"usageEvent...")
-                        # else:
-                        #     print(f"json_data: {json_data}")
-            except asyncio.CancelledError:
-                print("Response processing cancelled.")
-                break
-            except Exception as e:
-                print(f"Error processing response chunk: {e}")
-                # Continue processing other chunks
-                continue
+                    # elif 'completionStart' in json_data['event']:
+                    #     completionId = json_data['event']['completionStart']['completionId']
+                    #     print(f"-> completionStart: {completionId}")                            
+                    # elif 'contentEnd' in json_data['event']:
+                    #     print(f"-> contentEnd")
+                    #elif 'usageEvent' in json_data['event']:
+                    #    print(f"usageEvent...")
+                    # else:
+                    #     print(f"json_data: {json_data}")
     except Exception as e:
         print(f"Error processing responses: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("Response processing stopped.")
 
 async def play_audio():
     """Play audio responses."""
@@ -461,40 +445,28 @@ async def play_audio():
 
     try:
         while is_active:
-            try:
-                audio_data = await audio_queue.get()
+            audio_data = await audio_queue.get()
 
-                # Write the audio data in chunks to avoid blocking
-                for i in range(0, len(audio_data), CHUNK_SIZE):
-                    if not is_active:
-                        break
+            # Write the audio data in chunks to avoid blocking
+            for i in range(0, len(audio_data), CHUNK_SIZE):
+                if not is_active:
+                    break
 
-                    end = min(i + CHUNK_SIZE, len(audio_data))
-                    chunk = audio_data[i:end]
+                end = min(i + CHUNK_SIZE, len(audio_data))
+                chunk = audio_data[i:end]
 
-                    # Write chunk in executor to avoid blocking the event loop
-                    await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        stream.write,
-                        chunk
-                    )
+                # Write chunk in executor to avoid blocking the event loop
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    stream.write,
+                    chunk
+                )
 
-                    # Brief yield to allow other tasks to run
-                    await asyncio.sleep(0.001)
-            except asyncio.CancelledError:
-                print("Audio playback cancelled.")
-                break
-            except Exception as e:
-                print(f"Error playing audio chunk: {e}")
-                import traceback
-                traceback.print_exc()
-                # Continue playing other chunks
-                continue
+                # Brief yield to allow other tasks to run
+                await asyncio.sleep(0.001)
 
     except Exception as e:
         print(f"Error playing audio: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
         stream.stop_stream()
         stream.close()
@@ -587,64 +559,69 @@ async def send_text_input(text):
         raise RuntimeError("Session is not active. Call start_session() first.")
     await input_queue.put(text)
 
-async def run(use_stdin=True, skip_init=False):
+async def _read_stdin_to_queue():
+    """Read from stdin and send via send_text_input."""
+    try:
+        while is_active:
+            print("Waiting for user input...")
+            # Get user input from stdin
+            user_input = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: input("You: ")
+            )
+            
+            # Check if user wants to stop
+            if user_input.strip().lower() == 'quit':
+                print("Quitting...")
+                await input_queue.put('__stop__')
+                break
+            if user_input.strip() == '':
+                print("Stopping text input...")
+                await input_queue.put('__stop__')
+                break
+            
+            # Send input via send_text_input function
+            await send_text_input(user_input)
+    except Exception as e:
+        print(f"Error reading from stdin: {e}")
+        if is_active:
+            await input_queue.put('__stop__')
+
+async def run_translator():
     """
     번역기를 실행합니다.
     
     Args:
         use_stdin: True이면 표준 입력(stdin)에서 입력을 받고, False이면 큐에서 입력을 받습니다.
                    기본값은 True입니다.
-        skip_init: True이면 초기화를 건너뛰고 입력 루프만 실행합니다. 기본값은 False입니다.
     """
-    global is_active, playback_task, silent_audio_task
+    global is_active
+    # Start session
+    await start_session()
     
-    if not skip_init:
-        # Start session
-        await start_session()
-        
-        # Start audio playback task
-        print("Starting audio playback task...")
-        playback_task = asyncio.create_task(play_audio())
-        
-        # Start audio input stream (required for audio output)
-        await start_audio_input()
-        
-        # Start silent audio task to maintain audio stream
-        silent_audio_task = asyncio.create_task(send_silent_audio())
+    # Start audio playback task
+    print("Starting audio playback task...")
+    playback_task = asyncio.create_task(play_audio())
     
-    if use_stdin:
-        print("Starting text input mode. Type your message and press Enter...")
-        print("Type 'quit' or press Enter (empty line) to stop...")
-    else:
-        print("Starting text input mode. Waiting for external input via send_text_input()...")
-        print("Use send_text_input(text) function to send text.")
+    # Start audio input stream (required for audio output)
+    await start_audio_input()
+    
+    # Start silent audio task to maintain audio stream
+    silent_audio_task = asyncio.create_task(send_silent_audio())
+    
+    # Start stdin reading task
+    stdin_task = asyncio.create_task(_read_stdin_to_queue())
     
     try:
         while is_active:
-            if use_stdin:
-                print("Waiting for user input...")
-                # Get user input from stdin
-                user_input = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: input("You: ")
-                )
-                
-                # Check if user wants to stop
-                if user_input.strip().lower() == 'quit':
-                    print("Quitting...")
-                    break
-                if user_input.strip() == '':
-                    print("Stopping text input...")
-                    break
-            else:
-                # Get user input from queue (external input)
-                print("Waiting for external input...")
-                user_input = await input_queue.get()
-                
-                # Check for special stop signal
-                if user_input is None or user_input.strip().lower() == '__stop__':
-                    print("Stopping text input...")
-                    break
+            # Get user input from queue (unified processing)
+            print("Waiting for input...")
+            user_input = await input_queue.get()
+            
+            # Check for special stop signal
+            if user_input is None or user_input.strip().lower() == '__stop__':
+                print("Stopping text input...")
+                break
             
             # Process text input
             await process_text_input(user_input)
@@ -652,40 +629,47 @@ async def run(use_stdin=True, skip_init=False):
     except Exception as e:
         print(f"Error reading text: {e}")
     finally:
-        if not skip_init:
-            # Stop silent audio task
-            if silent_audio_task and not silent_audio_task.done():
-                silent_audio_task.cancel()
-                try:
-                    await silent_audio_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # End audio input
-            await end_audio_input()
-            print("Text input stopped.")
-            
-            # First cancel the tasks
-            tasks = []
-            if playback_task and not playback_task.done():
-                print("Cancelling audio playback task...")
-                tasks.append(playback_task)
-            for task in tasks:
-                print(f"Cancelling task: {task}")
-                task.cancel()
-            if tasks:
-                print("Gathering tasks...")
-                await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # End session
-            await end_session()
-            is_active = False
+        # Stop stdin task if it exists
+        if stdin_task and not stdin_task.done():
+            stdin_task.cancel()
+            try:
+                await stdin_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Stop silent audio task
+        if not silent_audio_task.done():
+            silent_audio_task.cancel()
+            try:
+                await silent_audio_task
+            except asyncio.CancelledError:
+                pass
+        
+        # End audio input
+        await end_audio_input()
+        print("Text input stopped.")
+        
+        # First cancel the tasks
+        tasks = []
+        if not playback_task.done():
+            print("Cancelling audio playback task...")
+            tasks.append(playback_task)
+        for task in tasks:
+            print(f"Cancelling task: {task}")
+            task.cancel()
+        if tasks:
+            print("Gathering tasks...")
+            await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # End session
+    await end_session()
+    is_active = False
 
-            # cancel the response task
-            if response and not response.done():
-                response.cancel()
+    # cancel the response task
+    if response and not response.done():
+        response.cancel()
 
-            print("Session ended")
+    print("Session ended")
 
 # if __name__ == "__main__":
 #     # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
