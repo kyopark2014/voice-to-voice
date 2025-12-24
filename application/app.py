@@ -296,9 +296,16 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 chat.save_to_memory(prompt, response)            
 
         elif mode == 'Translator (Text2Speech)':
-            response = chat.run_translator(prompt, language)
+            final = st.empty()
+            response = chat.run_translator(prompt, language, final)
             logger.info(f"response: {response}")
-            st.write(response)
+            final.write(response)
+
+            # translate
+            pronunciate_to_korean = chat.pronunciate_to_korean(response, language)
+            logger.info(f"pronunciate_to_korean: {pronunciate_to_korean}")
+            st.info(pronunciate_to_korean)
+
             st.session_state.messages.append({"role": "assistant", "content": response})
 
         else:

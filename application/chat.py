@@ -1079,7 +1079,7 @@ def get_or_create_loop():
     
     return _translator_loop
 
-async def _run_translator_async(text, language):
+async def _run_translator_async(text, language, final):
     """Async implementation of run_translator."""
     global _background_task
     
@@ -1108,6 +1108,9 @@ async def _run_translator_async(text, language):
         timeout = 30.0  # seconds
         start_time = time.time()
         
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3  # Wait for 3 consecutive timeouts before giving up
+        
         while True:
             try:
                 # Wait for chunk with timeout
@@ -1118,37 +1121,55 @@ async def _run_translator_async(text, language):
                     
                 chunk = await asyncio.wait_for(
                     translator.output_queue.get(),
-                    timeout=min(remaining_time, 2.0)  # Check every 2 seconds
+                    timeout=min(remaining_time, 1.5)  # Check every 1.5 seconds
                 )
+                
+                # Reset timeout counter when we receive a chunk
+                consecutive_timeouts = 0
+                
                 response_chunks.append(chunk)
                 logger.info(f"Received translation chunk: {chunk}")
-                
-                # If queue is empty for a short time, assume response is complete
-                # Wait a bit more to see if more chunks arrive
-                await asyncio.sleep(0.5)
-                if translator.output_queue.empty():
-                    # Check again after a short delay
-                    await asyncio.sleep(0.5)
-                    if translator.output_queue.empty():
-                        break
                         
             except asyncio.TimeoutError:
-                # If we have some chunks, return them
-                if response_chunks:
+                consecutive_timeouts += 1
+                logger.debug(f"Timeout waiting for chunk (consecutive: {consecutive_timeouts})")
+                
+                # Check if there are any chunks in the queue that arrived during the timeout
+                while not translator.output_queue.empty():
+                    try:
+                        chunk = translator.output_queue.get_nowait()
+                        consecutive_timeouts = 0  # Reset counter if we get a chunk
+                        response_chunks.append(chunk)
+                        logger.info(f"Received translation chunk after timeout check: {chunk}")
+                    except asyncio.QueueEmpty:
+                        break
+                
+                # If we have chunks and had multiple consecutive timeouts, assume response is complete
+                if response_chunks and consecutive_timeouts >= max_consecutive_timeouts:
+                    logger.info(f"Received {consecutive_timeouts} consecutive timeouts, assuming translation complete")
                     break
-                # Otherwise continue waiting
-                continue
+                
+                # If no chunks yet, continue waiting
+                if not response_chunks:
+                    remaining_time = timeout - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        logger.info("Overall timeout waiting for translation response")
+                        break
+                    continue
         
         translated_text = "".join(response_chunks) if response_chunks else text
         logger.info(f"Final translated text: {translated_text}")
         
     except Exception as e:
-        logger.info(f"Error reading from output_queue: {e}")
-        translated_text = text  # Fallback to original text
+        error_msg = str(e) if e else "Unknown error"
+        logger.info(f"Error reading from output_queue: {error_msg}")
+        if hasattr(e, '__traceback__'):
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
     
     return translated_text
 
-def run_translator(text, language):
+def run_translator(text, language, final):
     """Synchronous wrapper for run_translator that uses persistent event loop."""
     # Get or create persistent event loop
     loop = get_or_create_loop()
@@ -1156,8 +1177,38 @@ def run_translator(text, language):
     # Run the async function in the persistent loop
     if loop.is_running():
         # If loop is already running, schedule the coroutine
-        future = asyncio.run_coroutine_threadsafe(_run_translator_async(text, language), loop)
+        future = asyncio.run_coroutine_threadsafe(_run_translator_async(text, language, final), loop)
         return future.result(timeout=35.0)  # Wait up to 35 seconds
     else:
         # If loop is not running, run it
-        return loop.run_until_complete(_run_translator_async(text, language))
+        return loop.run_until_complete(_run_translator_async(text, language, final))
+
+def pronunciate_to_korean(context, language):
+    system = (
+        f"당신은 여행자입니다. 현지인과 얘기하기 위하여 <context> tag안의 {language}를 읽고 싶습니다. <example>의 예시를 참고하세요."
+        f"<context> tag안의 문장을 원문 그대로 읽을때에 한글로 발음기호를 표시하세요."
+        "<example> 私は駅を探しています。 => 와타시 와 에키 오 사가시테 이마스.</example>"
+        "발음 결과는 <result> tag를 붙여주세요."
+    )
+    human = "<context>{context}</context>"
+    
+    prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
+    # print('prompt: ', prompt)
+    
+    chat = get_chat(extended_thinking=reasoning_mode)
+    chain = prompt | chat    
+    try: 
+        result = chain.invoke(
+            {
+                "context": context,
+            }
+        )
+        
+        msg = result.content
+        # print('translated text: ', msg)
+    except Exception:
+        err_msg = traceback.format_exc()
+        logger.info(f"error message: {err_msg}")     
+        raise Exception ("Not able to request to LLM")
+
+    return msg[msg.find('<result>')+8:len(msg)-9] # remove <result> tag

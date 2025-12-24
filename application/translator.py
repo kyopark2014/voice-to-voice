@@ -6,6 +6,7 @@ import uuid
 import pyaudio
 from pathlib import Path
 from configparser import ConfigParser
+from concurrent.futures._base import InvalidStateError
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
@@ -191,7 +192,7 @@ async def start_session(language):
             "sampleRateHertz": 24000,
             "sampleSizeBits": 16,
             "channelCount": 1,
-            "voiceId": "matthew",
+            "voiceId": "tiffany",
             "encoding": "base64",
             "audioType": "SPEECH"
             }}
@@ -458,60 +459,71 @@ async def _process_responses():
     
     try:
         while is_active:
-            output = await stream.await_output()
-            result = await output[1].receive()
-            
-            if result.value and result.value.bytes_:
-                response_data = result.value.bytes_.decode('utf-8')
-                json_data = json.loads(response_data)                    
+            try:
+                output = await stream.await_output()
+                result = await output[1].receive()
                 
-                if 'event' in json_data:
-                    # Handle content start event
-                    if 'contentStart' in json_data['event']:
-                        # logger.info(f"json_data: {json_data}")
-                        content_start = json_data['event']['contentStart'] 
-                        # set role
-                        role = content_start['role']
-                        # logger.info(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
-                        
-                        # Check for speculative content
-                        if 'additionalModelFields' in content_start:
-                            additional_fields = json.loads(content_start['additionalModelFields'])
-                            #logger.info(f" additionalModelFields: {additional_fields}")
-                            if additional_fields.get('generationStage') == 'SPECULATIVE':
-                                display_assistant_text = True
-                            else:
-                                display_assistant_text = False
-                            
-                    # Handle text output event
-                    elif 'textOutput' in json_data['event']:
-                        text = json_data['event']['textOutput']['content']    
-                        
-                        if (role == "ASSISTANT" and display_assistant_text):
-                            logger.info(f"Assistant: {text}")
-                            await output_queue.put(text)
-                            await asyncio.sleep(0.01)
-                        elif role == "USER":
-                            logger.info(f"User: {text}")
-                            await output_queue.put(text)
-                            await asyncio.sleep(0.01)
+                if result.value and result.value.bytes_:
+                    response_data = result.value.bytes_.decode('utf-8')
+                    json_data = json.loads(response_data)                    
                     
-                    # Handle audio output
-                    elif 'audioOutput' in json_data['event']:
-                        # logger.info(f"audio...")
-                        audio_content = json_data['event']['audioOutput']['content']
-                        audio_bytes = base64.b64decode(audio_content)
-                        await audio_queue.put(audio_bytes)
+                    if 'event' in json_data:
+                        # Handle content start event
+                        if 'contentStart' in json_data['event']:
+                            # logger.info(f"json_data: {json_data}")
+                            content_start = json_data['event']['contentStart'] 
+                            # set role
+                            role = content_start['role']
+                            # logger.info(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                            
+                            # Check for speculative content
+                            if 'additionalModelFields' in content_start:
+                                additional_fields = json.loads(content_start['additionalModelFields'])
+                                #logger.info(f" additionalModelFields: {additional_fields}")
+                                if additional_fields.get('generationStage') == 'SPECULATIVE':
+                                    display_assistant_text = True
+                                else:
+                                    display_assistant_text = False
+                                
+                        # Handle text output event
+                        elif 'textOutput' in json_data['event']:
+                            text = json_data['event']['textOutput']['content']    
+                            
+                            if (role == "ASSISTANT" and display_assistant_text):
+                                logger.info(f"Assistant: {text}")
+                                await output_queue.put(text)
+                                await asyncio.sleep(0.01)
+                            elif role == "USER":
+                                logger.info(f"User: {text}")
+                                await output_queue.put(text)
+                                await asyncio.sleep(0.01)
+                        
+                        # Handle audio output
+                        elif 'audioOutput' in json_data['event']:
+                            # logger.info(f"audio...")
+                            audio_content = json_data['event']['audioOutput']['content']
+                            audio_bytes = base64.b64decode(audio_content)
+                            await audio_queue.put(audio_bytes)
 
-                    # elif 'completionStart' in json_data['event']:
-                    #     completionId = json_data['event']['completionStart']['completionId']
-                    #     logger.info(f"-> completionStart: {completionId}")                            
-                    # elif 'contentEnd' in json_data['event']:
-                    #     logger.info(f"-> contentEnd")
-                    #elif 'usageEvent' in json_data['event']:
-                    #    logger.info(f"usageEvent...")
-                    # else:
-                    #     logger.info(f"json_data: {json_data}")
+                        # elif 'completionStart' in json_data['event']:
+                        #     completionId = json_data['event']['completionStart']['completionId']
+                        #     logger.info(f"-> completionStart: {completionId}")                            
+                        # elif 'contentEnd' in json_data['event']:
+                        #     logger.info(f"-> contentEnd")
+                        #elif 'usageEvent' in json_data['event']:
+                        #    logger.info(f"usageEvent...")
+                        # else:
+                        #     logger.info(f"json_data: {json_data}")
+            except InvalidStateError as e:
+                # Ignore CANCELLED state errors from AWS CRT library
+                # This can happen when the stream is cancelled/closed
+                if "CANCELLED" in str(e):
+                    logger.debug(f"Ignoring cancelled future error: {e}")
+                    if not is_active:
+                        break
+                    continue
+                else:
+                    raise
     except Exception as e:
         error_msg = str(e)
         logger.info(f"Error processing responses: {e}")
