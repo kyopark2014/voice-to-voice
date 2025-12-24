@@ -1057,13 +1057,27 @@ async def run_translator(text):
 
     if not translator.is_active:
         # Load AWS credentials if not already loaded
+        logger.info("Loading AWS credentials...")
         translator.load_aws_credentials_from_config()
         
-        # Start session (only if not already started)
+        # Start session first
         await translator.start_session()
+        
+        # Start audio playback task
+        logger.info("Starting audio playback task...")
+        translator.playback_task = asyncio.create_task(translator.play_audio())
+        
+        # Start audio input stream (required for audio output)
+        await translator.start_audio_input()
+        
+        # Start silent audio task to maintain audio stream
+        translator.silent_audio_task = asyncio.create_task(translator.send_silent_audio())
+        
+        # Start run() as background task (use_stdin=False to use queue-based input, skip_init=True)
+        logger.info("Starting translator in background mode...")
+        translator.run_task = asyncio.create_task(translator.run(use_stdin=False, skip_init=True))
     
-    # Send text using read_text with provided text
-    # Don't wait for completion, just send the text
-    await translator.read_text(text=text)
+    # Send text using send_text_input with provided text
+    await translator.send_text_input(text=text)
     
     return text

@@ -85,6 +85,7 @@ content_name = str(uuid.uuid4())
 audio_content_name = str(uuid.uuid4())
 text_content_name = str(uuid.uuid4())
 audio_queue = asyncio.Queue()
+input_queue = asyncio.Queue()  # 외부에서 텍스트 입력을 받기 위한 큐
 role = None
 display_assistant_text = False
 is_active = False
@@ -544,7 +545,28 @@ async def process_text_input(user_input):
     
     print(f"📝 Text sent: {user_input}\n")
 
-async def run_translator():
+async def send_text_input(text):
+    """
+    외부에서 텍스트 입력을 주입하는 함수.
+    
+    Args:
+        text: 전송할 텍스트 문자열
+    
+    Example:
+        await send_text_input("안녕하세요")
+    """
+    if not is_active:
+        raise RuntimeError("Session is not active. Call start_session() first.")
+    await input_queue.put(text)
+
+async def run_translator(use_stdin=True):
+    """
+    번역기를 실행합니다.
+    
+    Args:
+        use_stdin: True이면 표준 입력(stdin)에서 입력을 받고, False이면 큐에서 입력을 받습니다.
+                   기본값은 True입니다.
+    """
     global is_active
     # Start session
     await start_session()
@@ -559,25 +581,39 @@ async def run_translator():
     # Start silent audio task to maintain audio stream
     silent_audio_task = asyncio.create_task(send_silent_audio())
     
-    print("Starting text input mode. Type your message and press Enter...")
-    print("Type 'quit' or press Enter (empty line) to stop...")
+    if use_stdin:
+        print("Starting text input mode. Type your message and press Enter...")
+        print("Type 'quit' or press Enter (empty line) to stop...")
+    else:
+        print("Starting text input mode. Waiting for external input via send_text_input()...")
+        print("Call send_text_input(text) from another coroutine to send text.")
     
     try:
         while is_active:
-            print("Waiting for user input...")
-            # Get user input
-            user_input = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: input("You: ")
-            )
-            
-            # Check if user wants to stop
-            if user_input.strip().lower() == 'quit':
-                print("Quitting...")
-                break
-            if user_input.strip() == '':
-                print("Stopping text input...")
-                break
+            if use_stdin:
+                print("Waiting for user input...")
+                # Get user input from stdin
+                user_input = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: input("You: ")
+                )
+                
+                # Check if user wants to stop
+                if user_input.strip().lower() == 'quit':
+                    print("Quitting...")
+                    break
+                if user_input.strip() == '':
+                    print("Stopping text input...")
+                    break
+            else:
+                # Get user input from queue (external input)
+                print("Waiting for external input...")
+                user_input = await input_queue.get()
+                
+                # Check for special stop signal
+                if user_input is None or user_input.strip().lower() == '__stop__':
+                    print("Stopping text input...")
+                    break
             
             # Process text input
             await process_text_input(user_input)
