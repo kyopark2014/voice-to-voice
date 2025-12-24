@@ -109,15 +109,8 @@ async def send_event(event_json):
     elif not isinstance(event_json, str):
         event_json = str(event_json)
     
-    # Ensure valid UTF-8 encoding before sending
-    try:
-        encoded_bytes = event_json.encode('utf-8')
-    except UnicodeEncodeError:
-        # Fallback: replace invalid characters
-        encoded_bytes = event_json.encode('utf-8', errors='replace')
-    
     event = InvokeModelWithBidirectionalStreamInputChunk(
-        value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
+        value=BidirectionalInputPayloadPart(bytes_=event_json.encode('utf-8'))
     )
     await stream.input_stream.send(event)
 
@@ -165,7 +158,7 @@ async def start_session():
             "sampleRateHertz": 24000,
             "sampleSizeBits": 16,
             "channelCount": 1,
-            "voiceId": "matthew",
+            "voiceId": "ambre",
             "encoding": "base64",
             "audioType": "SPEECH"
             }}
@@ -195,9 +188,10 @@ async def start_session():
     await send_event(text_content_start)
     
     system_prompt = (
-        "당신은 실시간 번역기입니다." 
-        "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
-        "번역한 내용만 답변합니다."        
+        "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
+        "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
+        "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
+        
     )
 
     text_input = f'''
@@ -391,12 +385,12 @@ async def _process_responses():
                         content_start = json_data['event']['contentStart'] 
                         # set role
                         role = content_start['role']
-                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                        print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
                         # Check for speculative content
                         if 'additionalModelFields' in content_start:
                             additional_fields = json.loads(content_start['additionalModelFields'])
-                            #print(f" additionalModelFields: {additional_fields}")
+                            print(f" additionalModelFields: {additional_fields}")
                             if additional_fields.get('generationStage') == 'SPECULATIVE':
                                 display_assistant_text = True
                             else:
@@ -413,16 +407,16 @@ async def _process_responses():
                     
                     # Handle audio output
                     elif 'audioOutput' in json_data['event']:
-                        # print(f"audio...")
+                        print(f"audio...")
                         audio_content = json_data['event']['audioOutput']['content']
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
 
-                    # elif 'completionStart' in json_data['event']:
-                    #     completionId = json_data['event']['completionStart']['completionId']
-                    #     print(f"-> completionStart: {completionId}")                            
-                    # elif 'contentEnd' in json_data['event']:
-                    #     print(f"-> contentEnd")
+                    elif 'completionStart' in json_data['event']:
+                        completionId = json_data['event']['completionStart']['completionId']
+                        print(f"-> completionStart: {completionId}")                            
+                    elif 'contentEnd' in json_data['event']:
+                        print(f"-> contentEnd")
                     #elif 'usageEvent' in json_data['event']:
                     #    print(f"usageEvent...")
                     # else:
@@ -543,20 +537,9 @@ async def read_text():
                 print("Stopping text input...")
                 break
             
-            # Ensure proper UTF-8 encoding handling
-            if isinstance(user_input, bytes):
-                # If somehow bytes, decode with error handling
-                user_input = user_input.decode('utf-8', errors='replace')
-            elif not isinstance(user_input, str):
+            # input() always returns a string, but ensure it's properly handled
+            if not isinstance(user_input, str):
                 user_input = str(user_input)
-            
-            # Normalize the string to ensure valid UTF-8
-            # Encode and decode to catch any encoding issues early
-            try:
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
-            except (UnicodeEncodeError, UnicodeDecodeError) as e:
-                print(f"Warning: Encoding issue detected, using error replacement: {e}")
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
             
             # Send text input to Nova Sonic
             await start_text_input()

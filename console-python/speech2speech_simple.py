@@ -83,7 +83,6 @@ is_active = False
 prompt_name = str(uuid.uuid4())
 content_name = str(uuid.uuid4())
 audio_content_name = str(uuid.uuid4())
-text_content_name = str(uuid.uuid4())
 audio_queue = asyncio.Queue()
 role = None
 display_assistant_text = False
@@ -103,21 +102,8 @@ def _initialize_client(region):
 
 async def send_event(event_json):
     """Send an event to the stream."""
-    # Ensure event_json is a string
-    if isinstance(event_json, bytes):
-        event_json = event_json.decode('utf-8', errors='replace')
-    elif not isinstance(event_json, str):
-        event_json = str(event_json)
-    
-    # Ensure valid UTF-8 encoding before sending
-    try:
-        encoded_bytes = event_json.encode('utf-8')
-    except UnicodeEncodeError:
-        # Fallback: replace invalid characters
-        encoded_bytes = event_json.encode('utf-8', errors='replace')
-    
     event = InvokeModelWithBidirectionalStreamInputChunk(
-        value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
+        value=BidirectionalInputPayloadPart(bytes_=event_json.encode('utf-8'))
     )
     await stream.input_stream.send(event)
 
@@ -165,7 +151,7 @@ async def start_session():
             "sampleRateHertz": 24000,
             "sampleSizeBits": 16,
             "channelCount": 1,
-            "voiceId": "matthew",
+            "voiceId": "ambre",
             "encoding": "base64",
             "audioType": "SPEECH"
             }}
@@ -195,9 +181,10 @@ async def start_session():
     await send_event(text_content_start)
     
     system_prompt = (
-        "당신은 실시간 번역기입니다." 
-        "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
-        "번역한 내용만 답변합니다."        
+        "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
+        "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
+        "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
+        
     )
 
     text_input = f'''
@@ -286,66 +273,6 @@ async def end_audio_input():
     '''
     await send_event(audio_content_end)
 
-async def start_text_input():
-    """Start text input stream."""
-    global text_content_name
-    text_content_name = str(uuid.uuid4())  # Generate new content name for each text input
-    text_content_start = f'''
-    {{
-        "event": {{
-            "contentStart": {{
-                "promptName": "{prompt_name}",
-                "contentName": "{text_content_name}",
-                "role": "USER",
-                "type": "TEXT",
-                "interactive": true,
-                "textInputConfiguration": {{
-                    "mediaType": "text/plain"
-                }}
-            }}
-        }}
-    }}
-    '''
-    await send_event(text_content_start)
-
-async def send_text(text):
-    """Send text input to the stream."""
-    if not is_active:
-        return
-    
-    # Ensure text is a proper UTF-8 string
-    if isinstance(text, bytes):
-        text = text.decode('utf-8', errors='replace')
-    elif not isinstance(text, str):
-        text = str(text)
-    
-    # Create text input event with proper JSON encoding
-    text_input_event = {
-        "event": {
-            "textInput": {
-                "promptName": prompt_name,
-                "contentName": text_content_name,
-                "content": text
-            }
-        }
-    }
-    text_event = json.dumps(text_input_event, ensure_ascii=False)
-    await send_event(text_event)
-
-async def end_text_input():
-    """End text input stream."""
-    text_content_end = f'''
-    {{
-        "event": {{
-            "contentEnd": {{
-                "promptName": "{prompt_name}",
-                "contentName": "{text_content_name}"
-            }}
-        }}
-    }}
-    '''
-    await send_event(text_content_end)
-
 async def end_session():
     """End the session."""
     if not is_active:
@@ -391,12 +318,12 @@ async def _process_responses():
                         content_start = json_data['event']['contentStart'] 
                         # set role
                         role = content_start['role']
-                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                        print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
                         # Check for speculative content
                         if 'additionalModelFields' in content_start:
                             additional_fields = json.loads(content_start['additionalModelFields'])
-                            #print(f" additionalModelFields: {additional_fields}")
+                            print(f" additionalModelFields: {additional_fields}")
                             if additional_fields.get('generationStage') == 'SPECULATIVE':
                                 display_assistant_text = True
                             else:
@@ -413,20 +340,20 @@ async def _process_responses():
                     
                     # Handle audio output
                     elif 'audioOutput' in json_data['event']:
-                        # print(f"audio...")
+                        print(f"audio...")
                         audio_content = json_data['event']['audioOutput']['content']
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
 
-                    # elif 'completionStart' in json_data['event']:
-                    #     completionId = json_data['event']['completionStart']['completionId']
-                    #     print(f"-> completionStart: {completionId}")                            
-                    # elif 'contentEnd' in json_data['event']:
-                    #     print(f"-> contentEnd")
-                    #elif 'usageEvent' in json_data['event']:
-                    #    print(f"usageEvent...")
-                    # else:
-                    #     print(f"json_data: {json_data}")
+                    elif 'completionStart' in json_data['event']:
+                        completionId = json_data['event']['completionStart']['completionId']
+                        print(f"-> completionStart: {completionId}")                            
+                    elif 'contentEnd' in json_data['event']:
+                        print(f"-> contentEnd")
+                    elif 'usageEvent' in json_data['event']:
+                        print(f"usageEvent...")
+                    else:
+                        print(f"json_data: {json_data}")
     except Exception as e:
         print(f"Error processing responses: {e}")
 
@@ -502,84 +429,6 @@ async def capture_audio():
         print("Audio capture stopped.")
         await end_audio_input()
 
-async def send_silent_audio():
-    """Send continuous silent audio chunks to maintain audio stream."""
-    # Create silent audio chunk (16-bit PCM, 16kHz, mono)
-    silent_chunk_size = CHUNK_SIZE * 2  # 2 bytes per sample for 16-bit
-    silent_chunk = b'\x00' * silent_chunk_size
-    
-    while is_active:
-        try:
-            # Send silent audio chunk
-            await send_audio_chunk(silent_chunk)
-            # Wait for next chunk (maintain ~16kHz sample rate)
-            await asyncio.sleep(0.01)  # 10ms delay
-        except Exception as e:
-            if is_active:
-                print(f"Error sending silent audio: {e}")
-            break
-
-async def read_text():
-    """Read text input from user and send to Nova Sonic."""
-    print("Starting text input mode. Type your message and press Enter...")
-    print("Press Enter (empty line) to stop...")
-    
-    # Start audio input stream (required for audio output)
-    await start_audio_input()
-    
-    # Start silent audio task to maintain audio stream
-    silent_audio_task = asyncio.create_task(send_silent_audio())
-    
-    try:
-        while is_active:
-            # Get user input
-            user_input = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: input("You: ")
-            )
-            
-            # Check if user wants to stop
-            if user_input.strip() == '':
-                print("Stopping text input...")
-                break
-            
-            # Ensure proper UTF-8 encoding handling
-            if isinstance(user_input, bytes):
-                # If somehow bytes, decode with error handling
-                user_input = user_input.decode('utf-8', errors='replace')
-            elif not isinstance(user_input, str):
-                user_input = str(user_input)
-            
-            # Normalize the string to ensure valid UTF-8
-            # Encode and decode to catch any encoding issues early
-            try:
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
-            except (UnicodeEncodeError, UnicodeDecodeError) as e:
-                print(f"Warning: Encoding issue detected, using error replacement: {e}")
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
-            
-            # Send text input to Nova Sonic
-            await start_text_input()
-            await send_text(user_input)
-            await end_text_input()
-            
-            print(f"📝 Text sent: {user_input}\n")
-            
-    except Exception as e:
-        print(f"Error reading text: {e}")
-    finally:
-        # Stop silent audio task
-        if not silent_audio_task.done():
-            silent_audio_task.cancel()
-            try:
-                await silent_audio_task
-            except asyncio.CancelledError:
-                pass
-        
-        # End audio input
-        await end_audio_input()
-        print("Text input stopped.")
-
 async def main():
     global is_active
     # Start session
@@ -588,18 +437,18 @@ async def main():
     # Start audio playback task
     playback_task = asyncio.create_task(play_audio())
     
-    # Start text input task (replacing audio capture)
-    text_task = asyncio.create_task(read_text())
+    # Start audio capture task
+    capture_task = asyncio.create_task(capture_audio())
     
-    # Wait for text input task to complete
-    await text_task
+    # Wait for user to press Enter to stop
+    await asyncio.get_event_loop().run_in_executor(None, input)
         
     # First cancel the tasks
     tasks = []
     if not playback_task.done():
         tasks.append(playback_task)
-    if not text_task.done():
-        tasks.append(text_task)
+    if not capture_task.done():
+        tasks.append(capture_task)
     for task in tasks:
         task.cancel()
     if tasks:
