@@ -31,6 +31,9 @@ mode_descriptions = {
     "MCP agent": [
         "MCP를 활용한 agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
     ],
+    "Japanese Translator": [
+        "Nova Sonic를 이용해 실시간 번역을 구현합니다."
+    ],
 }
 
 def update_seed_image_url(url):
@@ -51,7 +54,7 @@ with st.sidebar:
     
     # radio selection
     mode = st.radio(
-        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent"], index=0
+        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent", "Japanese Translator"], index=3
     )   
     st.info(mode_descriptions[mode][0])
     
@@ -271,6 +274,11 @@ if prompt := st.chat_input("메시지를 입력하세요."):
 
             if memoryMode == "Enable":
                 chat.save_to_memory(prompt, response)            
+
+        elif mode == 'Japanese Translator':
+            response = asyncio.run(chat.run_translator(prompt))
+            logger.info(f"response: {response}")
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
         else:
             stream = chat.general_conversation(prompt)

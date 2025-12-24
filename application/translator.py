@@ -581,7 +581,7 @@ async def read_text():
         await end_audio_input()
         print("Text input stopped.")
 
-async def main():
+async def run_translator(text):
     global is_active
     # Start session
     await start_session()
@@ -616,9 +616,5 @@ async def main():
 
     print("Session ended")
 
-if __name__ == "__main__":
-    # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
-    # This will only set environment variables if they are not already set
-    load_aws_credentials_from_config()
+load_aws_credentials_from_config()
 
-    asyncio.run(main())
