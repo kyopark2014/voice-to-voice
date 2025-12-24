@@ -1081,13 +1081,13 @@ def _get_or_create_loop():
 
 async def _run_translator_async(text):
     """Async implementation of run_translator."""
-    global background_task
+    global background_task, _translator_loop
     
     logger.info(f"is_active: {translator.is_active}")    
     if not translator.is_active:        
         logger.info(f"Starting translator as background task...")
-        # Get the current running loop (should be the persistent loop)
-        loop = asyncio.get_running_loop()
+        # Use the persistent loop created by run_translator
+        loop = _get_or_create_loop()
         background_task = loop.create_task(translator.translate())
         logger.info(f"Created translate task: {background_task}")
         # Wait a bit to ensure task is started
