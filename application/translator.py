@@ -96,9 +96,11 @@ prompt_name = str(uuid.uuid4())
 content_name = str(uuid.uuid4())
 audio_content_name = str(uuid.uuid4())
 text_content_name = str(uuid.uuid4())
-audio_queue = asyncio.Queue()
-input_queue = asyncio.Queue()  # 외부에서 텍스트 입력을 받기 위한 큐
-output_queue = asyncio.Queue()
+# Queues will be initialized in the current event loop when translate() is called
+# This avoids "bound to a different event loop" errors
+audio_queue = None
+input_queue = None  # 외부에서 텍스트 입력을 받기 위한 큐
+output_queue = None
 role = None
 display_assistant_text = False
 is_active = False
@@ -524,6 +526,7 @@ async def _process_responses():
 
 async def play_audio():
     """Play audio responses."""
+    global is_active
     p = pyaudio.PyAudio()
     stream = p.open(
         format=FORMAT,
@@ -562,6 +565,7 @@ async def play_audio():
         stream.close()
         p.terminate()
         logger.info("Audio playing stopped.")
+        is_active = False
 
 async def capture_audio():
     """Capture audio from microphone and send to Nova Sonic."""
@@ -681,14 +685,15 @@ async def _read_stdin_to_queue():
             await input_queue.put('__stop__')
 
 async def translate():
-    """
-    번역기를 실행합니다.
+    global is_active, response, output_queue, input_queue, audio_queue
     
-    Args:
-        use_stdin: True이면 표준 입력(stdin)에서 입력을 받고, False이면 큐에서 입력을 받습니다.
-                   기본값은 True입니다.
-    """
-    global is_active, response
+    # Ensure queues are created in the current event loop
+    # This prevents "bound to a different event loop" errors
+    # Recreate queues in the current event loop to ensure they're bound correctly
+    output_queue = asyncio.Queue()
+    input_queue = asyncio.Queue()
+    audio_queue = asyncio.Queue()
+    
     # Start session
     await start_session()
     

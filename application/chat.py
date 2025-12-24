@@ -1053,20 +1053,42 @@ def get_tool_info(tool_name, tool_content):
 
     return content, urls, tool_references
 
-async def run_translator(text, st):
+async def run_translator(text):
     """Run translator with provided text."""
+    # Ensure queues are created in the current event loop
+    # This is critical because asyncio.run() creates a new event loop each time
+    try:
+        current_loop = asyncio.get_running_loop()
+        # Recreate queues in the current event loop to avoid "bound to different event loop" errors
+        translator.output_queue = asyncio.Queue()
+        translator.input_queue = asyncio.Queue()
+        translator.audio_queue = asyncio.Queue()
+        logger.info("Queues recreated in current event loop")
+    except RuntimeError:
+        # If no running loop, create queues normally
+        translator.output_queue = asyncio.Queue()
+        translator.input_queue = asyncio.Queue()
+        translator.audio_queue = asyncio.Queue()
 
+    logger.info(f"translator.is_active: {translator.is_active}")
     if not translator.is_active:
         # Load AWS credentials if not already loaded
         logger.info("Loading AWS credentials...")
         translator.load_aws_credentials_from_config()
 
-        await translator.translate()
+        # Start translate() as a background task instead of awaiting it
+        # translate() runs an infinite loop, so we need to run it as a task
+        logger.info(f"Starting translator as background task...")
+        translate_task = asyncio.create_task(translator.translate())
+        # Give it a moment to initialize
+        await asyncio.sleep(0.5)
             
     # Send text using send_text_input with provided text
+    logger.info(f"Sending text: {text}")
     await translator.send_text_input(text=text)
 
     # Wait for response from output_queue
+    logger.info(f"Waiting for response from output_queue")
     translated_text = ""
     try:
         # Wait for response with timeout (30 seconds)
