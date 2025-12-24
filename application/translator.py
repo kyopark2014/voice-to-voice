@@ -257,6 +257,8 @@ async def start_session():
 
 async def start_audio_input():
     """Start audio input stream."""
+    # maxLengthMilliseconds: Maximum cumulative audio stream length in milliseconds
+    # Default is 600000ms (10 minutes), increase to 1200000ms (20 minutes)
     audio_content_start = f'''
     {{
         "event": {{
@@ -272,7 +274,8 @@ async def start_audio_input():
                     "sampleSizeBits": 16,
                     "channelCount": 1,
                     "audioType": "SPEECH",
-                    "encoding": "base64"
+                    "encoding": "base64",
+                    "maxLengthMilliseconds": 1200000
                 }}
             }}
         }}
