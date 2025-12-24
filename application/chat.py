@@ -1054,14 +1054,9 @@ def get_tool_info(tool_name, tool_content):
     return content, urls, tool_references
 
 async def run_translator(text):
-    """Run translator with provided text."""
-    # Ensure queues are created in the current event loop
-    # This is critical because asyncio.run() creates a new event loop each time
-    # asyncio.Queue() automatically binds to the current running event loop
     try:
-        # Check if we're in a running event loop
+        # binds to the current running event loop
         asyncio.get_running_loop()
-        # Recreate queues in the current event loop to avoid "bound to different event loop" errors
         translator.output_queue = asyncio.Queue()
         translator.input_queue = asyncio.Queue()
         translator.audio_queue = asyncio.Queue()
@@ -1072,14 +1067,11 @@ async def run_translator(text):
         translator.input_queue = asyncio.Queue()
         translator.audio_queue = asyncio.Queue()
 
-    logger.info(f"translator.is_active: {translator.is_active}")
-    translate_task = None
+    logger.info(f"is_active: {translator.is_active}")
+    
     if not translator.is_active:        
-        # Start translate() as a background task instead of awaiting it
-        # translate() runs an infinite loop, so we need to run it as a task
         logger.info(f"Starting translator as background task...")
-        translate_task = asyncio.create_task(translator.translate())
-        # Give it a moment to initialize
+        asyncio.create_task(translator.translate())
         await asyncio.sleep(0.5)
             
     # Send text using send_text_input with provided text
@@ -1132,15 +1124,5 @@ async def run_translator(text):
     except Exception as e:
         logger.info(f"Error reading from output_queue: {e}")
         translated_text = text  # Fallback to original text
-    finally:
-        # Clean up translate_task if it was created in this call
-        # Note: We don't cancel it if translator.is_active is still True,
-        # as it might be reused for subsequent calls
-        if translate_task and not translate_task.done():
-            # Give a moment for any pending HTTP responses to complete
-            await asyncio.sleep(0.5)
-            # Don't cancel - let it run in background for potential reuse
-            # The task will be cleaned up when asyncio.run() exits
-            logger.info("Leaving translate_task running for potential reuse")
     
     return translated_text
