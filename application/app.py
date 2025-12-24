@@ -306,7 +306,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
             logger.info(f"pronunciate_to_korean: {pronunciate_to_korean}")
             st.info(pronunciate_to_korean)
 
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append({"role": "assistant", "content": pronunciate_to_korean})
 
         else:
             stream = chat.general_conversation(prompt)
