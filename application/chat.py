@@ -1053,27 +1053,50 @@ def get_tool_info(tool_name, tool_content):
 
     return content, urls, tool_references
 
-async def run_translator(text):
-    try:
-        # binds to the current running event loop
-        asyncio.get_running_loop()
-        translator.output_queue = asyncio.Queue()
-        translator.input_queue = asyncio.Queue()
-        translator.audio_queue = asyncio.Queue()
-        logger.info("Queues recreated in current event loop")
-    except RuntimeError:
-        # If no running loop, create queues normally
-        translator.output_queue = asyncio.Queue()
-        translator.input_queue = asyncio.Queue()
-        translator.audio_queue = asyncio.Queue()
 
-    logger.info(f"is_active: {translator.is_active}")
+# Global variables to track event loop and background task
+_translator_loop = None
+background_task = None
+
+def _get_or_create_loop():
+    """Get existing event loop or create a new one."""
+    global _translator_loop
     
+    if _translator_loop is None or _translator_loop.is_closed():
+        # Create new event loop
+        _translator_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_translator_loop)
+        logger.info(f"Created new event loop: {_translator_loop}")
+        # Start loop in background thread
+        import threading
+        def run_loop():
+            _translator_loop.run_forever()
+        thread = threading.Thread(target=run_loop, daemon=True)
+        thread.start()
+        logger.info("Started event loop in background thread")
+    else:
+        logger.info(f"Using existing event loop: {_translator_loop}")
+    
+    return _translator_loop
+
+async def _run_translator_async(text):
+    """Async implementation of run_translator."""
+    global background_task
+    
+    logger.info(f"is_active: {translator.is_active}")    
     if not translator.is_active:        
         logger.info(f"Starting translator as background task...")
-        asyncio.create_task(translator.translate())
+        # Get the current running loop (should be the persistent loop)
+        loop = asyncio.get_running_loop()
+        background_task = loop.create_task(translator.translate())
+        logger.info(f"Created translate task: {background_task}")
+        # Wait a bit to ensure task is started
         await asyncio.sleep(0.5)
-            
+    
+    if background_task and not background_task.done():
+        # Wait a bit to ensure task is running
+        await asyncio.sleep(0.1)
+
     # Send text using send_text_input with provided text
     logger.info(f"Sending text: {text}")
     await translator.send_text_input(text=text)
@@ -1126,3 +1149,19 @@ async def run_translator(text):
         translated_text = text  # Fallback to original text
     
     return translated_text
+
+def run_translator(text):
+    """Synchronous wrapper for run_translator that uses persistent event loop."""
+    global _translator_loop
+    
+    # Get or create persistent event loop
+    loop = _get_or_create_loop()
+    
+    # Run the async function in the persistent loop
+    if loop.is_running():
+        # If loop is already running, schedule the coroutine
+        future = asyncio.run_coroutine_threadsafe(_run_translator_async(text), loop)
+        return future.result(timeout=35.0)  # Wait up to 35 seconds
+    else:
+        # If loop is not running, run it
+        return loop.run_until_complete(_run_translator_async(text))

@@ -276,7 +276,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 chat.save_to_memory(prompt, response)            
 
         elif mode == 'Japanese Translator':
-            response = asyncio.run(chat.run_translator(prompt))
+            response = chat.run_translator(prompt)
             logger.info(f"response: {response}")
             st.write(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
