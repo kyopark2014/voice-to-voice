@@ -1056,9 +1056,9 @@ def get_tool_info(tool_name, tool_content):
 
 # Global variables to track event loop and background task
 _translator_loop = None
-background_task = None
+_background_task = None
 
-def _get_or_create_loop():
+def get_or_create_loop():
     """Get existing event loop or create a new one."""
     global _translator_loop
     
@@ -1081,20 +1081,18 @@ def _get_or_create_loop():
 
 async def _run_translator_async(text):
     """Async implementation of run_translator."""
-    global background_task, _translator_loop
+    global _background_task
     
     logger.info(f"is_active: {translator.is_active}")    
     if not translator.is_active:        
         logger.info(f"Starting translator as background task...")
         # Use the persistent loop created by run_translator
-        loop = _get_or_create_loop()
-        background_task = loop.create_task(translator.translate())
-        logger.info(f"Created translate task: {background_task}")
-        # Wait a bit to ensure task is started
+        loop = get_or_create_loop()
+        _background_task = loop.create_task(translator.translate())
+        logger.info(f"Created translate task: {_background_task}")
         await asyncio.sleep(0.5)
     
-    if background_task and not background_task.done():
-        # Wait a bit to ensure task is running
+    if _background_task and not _background_task.done():
         await asyncio.sleep(0.1)
 
     # Send text using send_text_input with provided text
@@ -1152,10 +1150,8 @@ async def _run_translator_async(text):
 
 def run_translator(text):
     """Synchronous wrapper for run_translator that uses persistent event loop."""
-    global _translator_loop
-    
     # Get or create persistent event loop
-    loop = _get_or_create_loop()
+    loop = get_or_create_loop()
     
     # Run the async function in the persistent loop
     if loop.is_running():
