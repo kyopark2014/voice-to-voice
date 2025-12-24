@@ -6,6 +6,7 @@ import logging
 import sys
 import asyncio
 import uuid
+import translator
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -31,7 +32,7 @@ mode_descriptions = {
     "MCP agent": [
         "MCP를 활용한 agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
     ],
-    "Japanese Translator": [
+    "Translator (Text2Speech)": [
         "Nova Sonic를 이용해 실시간 번역을 구현합니다."
     ],
 }
@@ -54,7 +55,7 @@ with st.sidebar:
     
     # radio selection
     mode = st.radio(
-        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent", "Japanese Translator"], index=3
+        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent", "Translator (Text2Speech)"], index=3
     )   
     st.info(mode_descriptions[mode][0])
     
@@ -123,6 +124,25 @@ with st.sidebar:
         mcp_servers = [server for server, is_selected in mcp_selections.items() if is_selected]
     else:
         mcp_servers = []
+
+    if mode == 'Translator (Text2Speech)':
+        # model selection box
+        selectLanguage = st.selectbox(
+            '🖊️ 번역할 언어를 선택하세요',
+            (
+                "Japanese",
+                "French",
+                "German",
+                "Italian",
+                "Spanish",
+                "Portuguese",
+                "Chinese",
+                "English",
+            ), index=0
+        )
+        language = selectLanguage if selectLanguage else "Japanese"
+        logger.info(f"language: {language}")
+        translator.is_active = False
 
     # model selection box
     modelName = st.selectbox(
@@ -275,8 +295,8 @@ if prompt := st.chat_input("메시지를 입력하세요."):
             if memoryMode == "Enable":
                 chat.save_to_memory(prompt, response)            
 
-        elif mode == 'Japanese Translator':
-            response = chat.run_translator(prompt)
+        elif mode == 'Translator (Text2Speech)':
+            response = chat.run_translator(prompt, language)
             logger.info(f"response: {response}")
             st.write(response)
             st.session_state.messages.append({"role": "assistant", "content": response})

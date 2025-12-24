@@ -147,7 +147,7 @@ async def send_event(event_json):
         is_active = False
         raise
 
-async def start_session():
+async def start_session(language):
     """Start a new session with Nova Sonic."""
     global is_active, sonic_client, stream, response
 
@@ -222,7 +222,7 @@ async def start_session():
     
     system_prompt = (
         "당신은 실시간 번역기입니다." 
-        "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
+        f"사용자가 한국어로 입력하면, 원문 그대로를 {language}로 번역하여 답변하세요."
         "번역한 내용만 답변합니다."        
         "이전의 대화는 무시하고 현재 대화만 번역합니다."
     )
@@ -403,7 +403,7 @@ async def end_session():
     # close the stream
     await stream.input_stream.close()
 
-async def _restart_session():
+async def _restart_session(language):
     """Restart the session when audio stream length exceeds max length."""
     global is_active, stream, response
     
@@ -443,7 +443,7 @@ async def _restart_session():
         is_active = old_is_active
         
         # Start new session (this will create a new response task)
-        await start_session()
+        await start_session(language)
         
         logger.info("Session restarted successfully")
         
@@ -691,7 +691,7 @@ async def _read_stdin_to_queue():
         if is_active:
             await input_queue.put('__stop__')
 
-async def translate():
+async def translate(language):
     global is_active, response, output_queue, input_queue, audio_queue
     
     # Ensure queues are created in the current event loop
@@ -702,7 +702,7 @@ async def translate():
     audio_queue = asyncio.Queue()
     
     # Start session
-    await start_session()
+    await start_session(language)
     
     # Start audio playback task
     logger.info("Starting audio playback task...")
@@ -753,7 +753,7 @@ async def translate():
                     if "exceeded max length" in error_msg or "cumulative audio stream length" in error_msg:
                         logger.info("Detected audio stream length error. Restarting session...")
                         try:
-                            await _restart_session()
+                            await _restart_session(language)
                             logger.info("Session restarted. Continuing...")
                             continue  # Continue the loop to wait for next input
                         except Exception as restart_error:
@@ -763,7 +763,7 @@ async def translate():
                         # For other errors, try to restart once
                         logger.info("Attempting to restart session due to error...")
                         try:
-                            await _restart_session()
+                            await _restart_session(language)
                             logger.info("Session restarted. Continuing...")
                             continue  # Continue the loop to wait for next input
                         except Exception as restart_error:
