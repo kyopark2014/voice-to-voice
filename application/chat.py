@@ -3,6 +3,7 @@ import boto3
 import os
 import json
 import re
+import time
 import info 
 import utils
 import translator
@@ -1052,7 +1053,7 @@ def get_tool_info(tool_name, tool_content):
 
     return content, urls, tool_references
 
-async def run_translator(text):
+async def run_translator(text, st):
     """Run translator with provided text."""
 
     if not translator.is_active:
@@ -1060,9 +1061,55 @@ async def run_translator(text):
         logger.info("Loading AWS credentials...")
         translator.load_aws_credentials_from_config()
 
-        await translator.run_translator()
+        await translator.translate()
             
     # Send text using send_text_input with provided text
     await translator.send_text_input(text=text)
+
+    # Wait for response from output_queue
+    translated_text = ""
+    try:
+        # Wait for response with timeout (30 seconds)
+        response_chunks = []
+        timeout = 30.0  # seconds
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Wait for chunk with timeout
+                remaining_time = timeout - (time.time() - start_time)
+                if remaining_time <= 0:
+                    logger.info("Timeout waiting for translation response")
+                    break
+                    
+                chunk = await asyncio.wait_for(
+                    translator.output_queue.get(),
+                    timeout=min(remaining_time, 2.0)  # Check every 2 seconds
+                )
+                response_chunks.append(chunk)
+                logger.info(f"Received translation chunk: {chunk}")
+                
+                # If queue is empty for a short time, assume response is complete
+                # Wait a bit more to see if more chunks arrive
+                await asyncio.sleep(0.5)
+                if translator.output_queue.empty():
+                    # Check again after a short delay
+                    await asyncio.sleep(0.5)
+                    if translator.output_queue.empty():
+                        break
+                        
+            except asyncio.TimeoutError:
+                # If we have some chunks, return them
+                if response_chunks:
+                    break
+                # Otherwise continue waiting
+                continue
+        
+        translated_text = "".join(response_chunks) if response_chunks else text
+        logger.info(f"Final translated text: {translated_text}")
+        
+    except Exception as e:
+        logger.info(f"Error reading from output_queue: {e}")
+        translated_text = text  # Fallback to original text
     
-    return text
+    return translated_text

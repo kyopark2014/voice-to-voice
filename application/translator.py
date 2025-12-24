@@ -10,6 +10,18 @@ from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWith
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
 from smithy_aws_core.identity.environment import EnvironmentCredentialsResolver
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,  # Default to INFO level
+    format='%(filename)s:%(lineno)d | %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+
+logger = logging.getLogger("translator")
 
 # Audio configuration
 INPUT_SAMPLE_RATE = 16000
@@ -86,6 +98,7 @@ audio_content_name = str(uuid.uuid4())
 text_content_name = str(uuid.uuid4())
 audio_queue = asyncio.Queue()
 input_queue = asyncio.Queue()  # 외부에서 텍스트 입력을 받기 위한 큐
+output_queue = asyncio.Queue()
 role = None
 display_assistant_text = False
 is_active = False
@@ -104,6 +117,7 @@ def _initialize_client(region):
 
 async def send_event(event_json):
     """Send an event to the stream."""
+    global is_active
     # Ensure event_json is a string
     if isinstance(event_json, bytes):
         event_json = event_json.decode('utf-8', errors='replace')
@@ -117,10 +131,15 @@ async def send_event(event_json):
         # Fallback: replace invalid characters
         encoded_bytes = event_json.encode('utf-8', errors='replace')
     
-    event = InvokeModelWithBidirectionalStreamInputChunk(
-        value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
-    )
-    await stream.input_stream.send(event)
+    try:
+        event = InvokeModelWithBidirectionalStreamInputChunk(
+            value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
+        )
+        await stream.input_stream.send(event)
+    except Exception as e:
+        logger.info(f"Error sending event: {e}")
+        is_active = False
+        raise
 
 async def start_session():
     """Start a new session with Nova Sonic."""
@@ -375,8 +394,59 @@ async def end_session():
     # close the stream
     await stream.input_stream.close()
 
+async def _restart_session():
+    """Restart the session when audio stream length exceeds max length."""
+    global is_active, stream, response
+    
+    logger.info("Restarting session due to audio stream length error...")
+    
+    # Cancel current response task if it exists
+    if response and not response.done():
+        response.cancel()
+        try:
+            await response
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.info(f"Error cancelling response task: {e}")
+    
+    try:
+        # End current session gracefully
+        if stream:
+            try:
+                # Close stream input
+                if hasattr(stream, 'input_stream'):
+                    try:
+                        await stream.input_stream.close()
+                    except Exception as e:
+                        logger.info(f"Error closing input stream: {e}")
+            except Exception as e:
+                logger.info(f"Error ending session during restart: {e}")
+        
+        # Reset state temporarily
+        old_is_active = is_active
+        is_active = False
+        
+        # Wait a moment before restarting
+        await asyncio.sleep(1.0)
+        
+        # Restore is_active state
+        is_active = old_is_active
+        
+        # Start new session (this will create a new response task)
+        await start_session()
+        
+        logger.info("Session restarted successfully")
+        
+    except Exception as e:
+        logger.info(f"Error restarting session: {e}")
+        is_active = False
+        raise
+
 async def _process_responses():
     """Process responses from the stream."""
+    global is_active, role, display_assistant_text, stream
+    
     try:
         while is_active:
             output = await stream.await_output()
@@ -389,16 +459,16 @@ async def _process_responses():
                 if 'event' in json_data:
                     # Handle content start event
                     if 'contentStart' in json_data['event']:
-                        # print(f"json_data: {json_data}")
+                        # logger.info(f"json_data: {json_data}")
                         content_start = json_data['event']['contentStart'] 
                         # set role
                         role = content_start['role']
-                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                        # logger.info(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
                         # Check for speculative content
                         if 'additionalModelFields' in content_start:
                             additional_fields = json.loads(content_start['additionalModelFields'])
-                            #print(f" additionalModelFields: {additional_fields}")
+                            #logger.info(f" additionalModelFields: {additional_fields}")
                             if additional_fields.get('generationStage') == 'SPECULATIVE':
                                 display_assistant_text = True
                             else:
@@ -409,28 +479,48 @@ async def _process_responses():
                         text = json_data['event']['textOutput']['content']    
                         
                         if (role == "ASSISTANT" and display_assistant_text):
-                            print(f"Assistant: {text}")
+                            logger.info(f"Assistant: {text}")
+                            await output_queue.put(text)
+                            await asyncio.sleep(0.01)
                         elif role == "USER":
-                            print(f"User: {text}")
+                            logger.info(f"User: {text}")
+                            await output_queue.put(text)
+                            await asyncio.sleep(0.01)
                     
                     # Handle audio output
                     elif 'audioOutput' in json_data['event']:
-                        # print(f"audio...")
+                        # logger.info(f"audio...")
                         audio_content = json_data['event']['audioOutput']['content']
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
 
                     # elif 'completionStart' in json_data['event']:
                     #     completionId = json_data['event']['completionStart']['completionId']
-                    #     print(f"-> completionStart: {completionId}")                            
+                    #     logger.info(f"-> completionStart: {completionId}")                            
                     # elif 'contentEnd' in json_data['event']:
-                    #     print(f"-> contentEnd")
+                    #     logger.info(f"-> contentEnd")
                     #elif 'usageEvent' in json_data['event']:
-                    #    print(f"usageEvent...")
+                    #    logger.info(f"usageEvent...")
                     # else:
-                    #     print(f"json_data: {json_data}")
+                    #     logger.info(f"json_data: {json_data}")
     except Exception as e:
-        print(f"Error processing responses: {e}")
+        error_msg = str(e)
+        logger.info(f"Error processing responses: {e}")
+        
+        # Check if it's an audio stream length exceeded error
+        if "exceeded max length" in error_msg or "cumulative audio stream length" in error_msg:
+            logger.info("Audio stream length exceeded max length. Attempting to restart session...")
+            try:
+                # Signal that we need to restart by setting a flag
+                # The translate() function will handle the actual restart
+                # We just need to exit this function so the task completes
+                is_active = False
+            except Exception as restart_error:
+                logger.info(f"Error preparing for restart: {restart_error}")
+                is_active = False
+        else:
+            # For other errors, re-raise to be handled by translate() function
+            raise
 
 async def play_audio():
     """Play audio responses."""
@@ -466,12 +556,12 @@ async def play_audio():
                 await asyncio.sleep(0.001)
 
     except Exception as e:
-        print(f"Error playing audio: {e}")
+        logger.info(f"Error playing audio: {e}")
     finally:
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("Audio playing stopped.")
+        logger.info("Audio playing stopped.")
 
 async def capture_audio():
     """Capture audio from microphone and send to Nova Sonic."""
@@ -484,24 +574,24 @@ async def capture_audio():
         frames_per_buffer=CHUNK_SIZE
     )
     
-    print("Starting audio capture. Speak into your microphone...")
-    print("Press Enter to stop...")
+    logger.info("Starting audio capture. Speak into your microphone...")
+    logger.info("Press Enter to stop...")
     
     await start_audio_input()
     
     try:
         while is_active:
             audio_data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            # print(f"-> audioInput: {audio_data[:10]}...")
+            # logger.info(f"-> audioInput: {audio_data[:10]}...")
             await send_audio_chunk(audio_data)
             await asyncio.sleep(0.01)
     except Exception as e:
-        print(f"Error capturing audio: {e}")
+        logger.info(f"Error capturing audio: {e}")
     finally:
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("Audio capture stopped.")
+        logger.info("Audio capture stopped.")
         await end_audio_input()
 
 async def send_silent_audio():
@@ -518,7 +608,7 @@ async def send_silent_audio():
             await asyncio.sleep(0.01)  # 10ms delay
         except Exception as e:
             if is_active:
-                print(f"Error sending silent audio: {e}")
+                logger.info(f"Error sending silent audio: {e}")
             break
 
 async def process_text_input(user_input):
@@ -535,7 +625,7 @@ async def process_text_input(user_input):
     try:
         user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
     except (UnicodeEncodeError, UnicodeDecodeError) as e:
-        print(f"Warning: Encoding issue detected, using error replacement: {e}")
+        logger.info(f"Warning: Encoding issue detected, using error replacement: {e}")
         user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
     
     # Send text input to Nova Sonic
@@ -543,7 +633,7 @@ async def process_text_input(user_input):
     await send_text(user_input)
     await end_text_input()
     
-    print(f"📝 Text sent: {user_input}\n")
+    logger.info(f"📝 Text sent: {user_input}\n")
 
 async def send_text_input(text):
     """
@@ -555,7 +645,10 @@ async def send_text_input(text):
     Example:
         await send_text_input("안녕하세요")
     """
+    global is_active
     if not is_active:
+        logger.info("Session is not active. Setting is_active to False.")
+        is_active = False
         raise RuntimeError("Session is not active. Call start_session() first.")
     await input_queue.put(text)
 
@@ -563,7 +656,7 @@ async def _read_stdin_to_queue():
     """Read from stdin and send via send_text_input."""
     try:
         while is_active:
-            print("Waiting for user input...")
+            logger.info("Waiting for user input...")
             # Get user input from stdin
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -572,22 +665,22 @@ async def _read_stdin_to_queue():
             
             # Check if user wants to stop
             if user_input.strip().lower() == 'quit':
-                print("Quitting...")
+                logger.info("Quitting...")
                 await input_queue.put('__stop__')
                 break
             if user_input.strip() == '':
-                print("Stopping text input...")
+                logger.info("Stopping text input...")
                 await input_queue.put('__stop__')
                 break
             
             # Send input via send_text_input function
             await send_text_input(user_input)
     except Exception as e:
-        print(f"Error reading from stdin: {e}")
+        logger.info(f"Error reading from stdin: {e}")
         if is_active:
             await input_queue.put('__stop__')
 
-async def run_translator():
+async def translate():
     """
     번역기를 실행합니다.
     
@@ -595,12 +688,12 @@ async def run_translator():
         use_stdin: True이면 표준 입력(stdin)에서 입력을 받고, False이면 큐에서 입력을 받습니다.
                    기본값은 True입니다.
     """
-    global is_active
+    global is_active, response
     # Start session
     await start_session()
     
     # Start audio playback task
-    print("Starting audio playback task...")
+    logger.info("Starting audio playback task...")
     playback_task = asyncio.create_task(play_audio())
     
     # Start audio input stream (required for audio output)
@@ -610,32 +703,96 @@ async def run_translator():
     silent_audio_task = asyncio.create_task(send_silent_audio())
     
     # Start stdin reading task
-    stdin_task = asyncio.create_task(_read_stdin_to_queue())
+    # stdin_task = asyncio.create_task(_read_stdin_to_queue())
     
     try:
         while is_active:
-            # Get user input from queue (unified processing)
-            print("Waiting for input...")
-            user_input = await input_queue.get()
+            # Monitor both input queue and response task
+            # Use asyncio.wait to monitor both simultaneously
+            tasks_to_wait = [asyncio.create_task(input_queue.get())]
+            if response:
+                tasks_to_wait.append(response)
             
-            # Check for special stop signal
-            if user_input is None or user_input.strip().lower() == '__stop__':
-                print("Stopping text input...")
-                break
+            done, pending = await asyncio.wait(
+                tasks_to_wait,
+                return_when=asyncio.FIRST_COMPLETED
+            )
             
-            # Process text input
-            await process_text_input(user_input)
+            # Check if response task completed (failed)
+            response_completed = False
+            if response and response in done:
+                response_completed = True
+                try:
+                    # Check if task completed with an error
+                    await response
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.info(f"Response task failed: {e}")
+                    
+                    # Cancel the input queue task if it's still pending
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    
+                    # Check if it's an audio stream length exceeded error
+                    if "exceeded max length" in error_msg or "cumulative audio stream length" in error_msg:
+                        logger.info("Detected audio stream length error. Restarting session...")
+                        try:
+                            await _restart_session()
+                            logger.info("Session restarted. Continuing...")
+                            continue  # Continue the loop to wait for next input
+                        except Exception as restart_error:
+                            logger.info(f"Failed to restart session: {restart_error}")
+                            break
+                    else:
+                        # For other errors, try to restart once
+                        logger.info("Attempting to restart session due to error...")
+                        try:
+                            await _restart_session()
+                            logger.info("Session restarted. Continuing...")
+                            continue  # Continue the loop to wait for next input
+                        except Exception as restart_error:
+                            logger.info(f"Failed to restart session: {restart_error}")
+                            break
+            
+            # If response task completed without error, just continue
+            if response_completed:
+                continue
+            
+            # Get user input from completed task
+            user_input_task = None
+            for task in done:
+                if task != response:
+                    user_input_task = task
+                    break
+            
+            if user_input_task:
+                user_input = await user_input_task
+                
+                # Check for special stop signal
+                if user_input is None or user_input.strip().lower() == '__stop__':
+                    logger.info("Stopping text input...")
+                    break
+                
+                # Process text input
+                await process_text_input(user_input)
+            else:
+                # If no input task, just continue (response task might have completed)
+                continue
             
     except Exception as e:
-        print(f"Error reading text: {e}")
+        logger.info(f"Error reading text: {e}")
     finally:
-        # Stop stdin task if it exists
-        if stdin_task and not stdin_task.done():
-            stdin_task.cancel()
-            try:
-                await stdin_task
-            except asyncio.CancelledError:
-                pass
+        # # Stop stdin task if it exists
+        # if stdin_task and not stdin_task.done():
+        #     stdin_task.cancel()
+        #     try:
+        #         await stdin_task
+        #     except asyncio.CancelledError:
+        #         pass
         
         # Stop silent audio task
         if not silent_audio_task.done():
@@ -647,18 +804,18 @@ async def run_translator():
         
         # End audio input
         await end_audio_input()
-        print("Text input stopped.")
+        logger.info("Text input stopped.")
         
         # First cancel the tasks
         tasks = []
         if not playback_task.done():
-            print("Cancelling audio playback task...")
+            logger.info("Cancelling audio playback task...")
             tasks.append(playback_task)
         for task in tasks:
-            print(f"Cancelling task: {task}")
+            logger.info(f"Cancelling task: {task}")
             task.cancel()
         if tasks:
-            print("Gathering tasks...")
+            logger.info("Gathering tasks...")
             await asyncio.gather(*tasks, return_exceptions=True)
     
     # End session
@@ -669,11 +826,4 @@ async def run_translator():
     if response and not response.done():
         response.cancel()
 
-    print("Session ended")
-
-# if __name__ == "__main__":
-#     # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
-#     # This will only set environment variables if they are not already set
-#     load_aws_credentials_from_config()
-
-#     asyncio.run(run_translator())
+    logger.info("Session ended")
