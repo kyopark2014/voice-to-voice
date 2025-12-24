@@ -3,30 +3,20 @@ import asyncio
 import base64
 import json
 import uuid
-import warnings
 import pyaudio
-import pytz
-import datetime
-import time
-import inspect
 from pathlib import Path
 from configparser import ConfigParser
-from rx.subject import Subject
-from rx import operators as ops
-from rx.scheduler.eventloop import AsyncIOScheduler
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
 from smithy_aws_core.identity.environment import EnvironmentCredentialsResolver
 
-# Suppress warnings
-warnings.filterwarnings("ignore")
 # Audio configuration
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
-CHUNK_SIZE = 1024  # Number of frames per buffer
+CHUNK_SIZE = 1024
 
 def load_aws_credentials_from_config(profile='default'):
     """
@@ -84,1261 +74,551 @@ def load_aws_credentials_from_config(profile='default'):
                 if region:
                     os.environ['AWS_DEFAULT_REGION'] = region
 
-# Debug mode flag
-DEBUG = False
+model_id = 'amazon.nova-2-sonic-v1:0'
+region = 'us-west-2'
+client = None
+stream = None
+response = None
+is_active = False
+prompt_name = str(uuid.uuid4())
+content_name = str(uuid.uuid4())
+audio_content_name = str(uuid.uuid4())
+text_content_name = str(uuid.uuid4())
+audio_queue = asyncio.Queue()
+role = None
+display_assistant_text = False
+is_active = False
+sonic_client = None
 
-def debug_print(message):
-    """Print only if debug mode is enabled"""
-    if DEBUG:
-        functionName = inspect.stack()[1].function
-        if  functionName == 'time_it' or functionName == 'time_it_async':
-            functionName = inspect.stack()[2].function
-        print('{:%Y-%m-%d %H:%M:%S.%f}'.format(datetime.datetime.now())[:-3] + ' ' + functionName + ' ' + message)
+def _initialize_client(region):
+    """Initialize the Bedrock client."""
+    config = Config(
+        endpoint_uri=f"https://bedrock-runtime.{region}.amazonaws.com",
+        region=region,
+        aws_credentials_identity_resolver=EnvironmentCredentialsResolver(),
+    )
+    client = BedrockRuntimeClient(config=config)
 
-def time_it(label, methodToRun):
-    start_time = time.perf_counter()
-    result = methodToRun()
-    end_time = time.perf_counter()
-    debug_print(f"Execution time for {label}: {end_time - start_time:.4f} seconds")
-    return result
+    return client
 
-async def time_it_async(label, methodToRun):
-    start_time = time.perf_counter()
-    result = await methodToRun()
-    end_time = time.perf_counter()
-    debug_print(f"Execution time for {label}: {end_time - start_time:.4f} seconds")
-    return result
-
-
-class ToolProcessor:
-    def __init__(self):
-        # ThreadPoolExecutor could be used for complex implementations
-        self.tasks = {}
+async def send_event(event_json):
+    """Send an event to the stream."""
+    # Ensure event_json is a string
+    if isinstance(event_json, bytes):
+        event_json = event_json.decode('utf-8', errors='replace')
+    elif not isinstance(event_json, str):
+        event_json = str(event_json)
     
-    async def process_tool_async(self, tool_name, tool_content):
-        """Process a tool call asynchronously and return the result"""
-        # Create a unique task ID
-        task_id = str(uuid.uuid4())
-        
-        # Create and store the task
-        task = asyncio.create_task(self._run_tool(tool_name, tool_content))
-        self.tasks[task_id] = task
-        
-        try:
-            # Wait for the task to complete
-            result = await task
-            return result
-        finally:
-            # Clean up the task reference
-            if task_id in self.tasks:
-                del self.tasks[task_id]
+    # Ensure valid UTF-8 encoding before sending
+    try:
+        encoded_bytes = event_json.encode('utf-8')
+    except UnicodeEncodeError:
+        # Fallback: replace invalid characters
+        encoded_bytes = event_json.encode('utf-8', errors='replace')
     
-    async def _run_tool(self, tool_name, tool_content):
-        """Internal method to execute the tool logic"""
-        debug_print(f"Processing tool: {tool_name}")
-        tool = tool_name.lower()
+    event = InvokeModelWithBidirectionalStreamInputChunk(
+        value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
+    )
+    await stream.input_stream.send(event)
+
+async def start_session():
+    """Start a new session with Nova Sonic."""
+    global is_active, sonic_client, stream, response
+
+    if not sonic_client:
+        sonic_client = _initialize_client(region)
         
-        if tool == "getdateandtimetool":
-            # Get current date in PST timezone
-            pst_timezone = pytz.timezone("America/Los_Angeles")
-            pst_date = datetime.datetime.now(pst_timezone)
-            
-            return {
-                "formattedTime": pst_date.strftime("%I:%M %p"),
-                "date": pst_date.strftime("%Y-%m-%d"),
-                "year": pst_date.year,
-                "month": pst_date.month,
-                "day": pst_date.day,
-                "dayOfWeek": pst_date.strftime("%A").upper(),
-                "timezone": "PST"
-            }        
-        else:
-            return {
-                "error": f"Unsupported tool: {tool_name}"
-            }
-        
-class BedrockStreamManager:
-    """Manages bidirectional streaming with AWS Bedrock using RxPy for event processing"""
+    # Initialize the stream
+    stream = await sonic_client.invoke_model_with_bidirectional_stream(
+        InvokeModelWithBidirectionalStreamOperationInput(model_id=model_id)
+    )
+    is_active = True
     
-    # Event templates
-    START_SESSION_EVENT = '''{
+    # Send session start event
+    session_start = '''
+    {
         "event": {
-            "sessionStart": {
+        "sessionStart": {
             "inferenceConfiguration": {
-                "maxTokens": 1024,
-                "topP": 0.9,
-                "temperature": 0.7
-                }
+            "maxTokens": 1024,
+            "topP": 0.9,
+            "temperature": 0.1
             }
         }
-    }'''
-
-    def system_prompt(self, prompt):
-        """Create a system prompt"""
-        systemPrompt = {
-            "event": {
-               "textInput": {
-                    "promptName": self.prompt_name,
-                    "contentName": self.content_name,
-                    "content": prompt
-                }
-            }
         }
+    }
+    '''
+    await send_event(session_start)
     
-        return json.dumps(systemPrompt, ensure_ascii=False)
+    # Send prompt start event
+    #tiffany, amy, matthew ambre
+    prompt_start = f'''
+    {{
+        "event": {{
+        "promptStart": {{
+            "promptName": "{prompt_name}",
+            "textOutputConfiguration": {{
+            "mediaType": "text/plain"
+            }},
+            "audioOutputConfiguration": {{
+            "mediaType": "audio/lpcm",
+            "sampleRateHertz": 24000,
+            "sampleSizeBits": 16,
+            "channelCount": 1,
+            "voiceId": "matthew",
+            "encoding": "base64",
+            "audioType": "SPEECH"
+            }}
+        }}
+        }}
+    }}
+    '''
+    await send_event(prompt_start)
     
-    def chat_prompt(self, content, content_name ):
-        """Create a system prompt"""
-        systemPrompt = {
-            "event": {
-               "textInput": {
-                    "promptName": self.prompt_name,
-                    "contentName": content_name,
-                    "content": content
-                }
-            }
-        }
-    
-        return json.dumps(systemPrompt, ensure_ascii=False)
-    
-    def start_prompt(self):
-        """Create a promptStart event"""
-        get_default_tool_schema = json.dumps({
-            "type": "object",
-            "properties": {},
-            "required": []
-        })
-        
-        prompt_start_event = {
-            "event": {
-                "promptStart": {
-                    "promptName": self.prompt_name,
-                    "textOutputConfiguration": {
-                        "mediaType": "text/plain"
-                    },
-                    "audioOutputConfiguration": {
-                        "mediaType": "audio/lpcm",
-                        "sampleRateHertz": 24000,
-                        "sampleSizeBits": 16,
-                        "channelCount": 1,
-                        "voiceId": "matthew",
-                        "encoding": "base64",
-                        "audioType": "SPEECH"
-                    },
-                    "toolUseOutputConfiguration": {
-                        "mediaType": "application/json"
-                    },
-                    "toolConfiguration": {
-                        "tools": [
-                            {
-                                "toolSpec": {
-                                    "name": "getDateAndTimeTool",
-                                    "description": "Get information about the current date and time",
-                                    "inputSchema": {
-                                        "json": get_default_tool_schema
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            }
-        }
-        
-        return json.dumps(prompt_start_event)
-
-    def tool_result_event(self, content_name, content, role):
-        """Create a tool result event"""
-        if isinstance(content, dict):
-            content_json_string = json.dumps(content)
-        else:
-            content_json_string = content
-            
-        tool_result_event = {
-            "event": {
-                "toolResult": {
-                    "promptName": self.prompt_name,
-                    "contentName": content_name,
-                    "content": content_json_string
-                }
-            }
-        }
-        print(f'Tool result sent: {json.dumps(tool_result_event, indent=2)}')
-        return json.dumps(tool_result_event)
-
-    CONTENT_START_EVENT = '''{
-        "event": {
-            "contentStart": {
-            "promptName": "%s",
-            "contentName": "%s",
-            "type": "AUDIO",
-            "interactive": true,
-            "role": "USER",
-            "audioInputConfiguration": {
-                "mediaType": "audio/lpcm",
-                "sampleRateHertz": 16000,
-                "sampleSizeBits": 16,
-                "channelCount": 1,
-                "audioType": "SPEECH",
-                "encoding": "base64"
-                }
-            }
-        }
-    }'''
-
-    AUDIO_EVENT_TEMPLATE = '''{
-        "event": {
-            "audioInput": {
-            "promptName": "%s",
-            "contentName": "%s",
-            "content": "%s"
-            }
-        }
-    }'''
-
-    TEXT_CONTENT_START_EVENT = '''{
-        "event": {
-            "contentStart": {
-            "promptName": "%s",
-            "contentName": "%s",
-            "role": "%s",
-            "type": "TEXT",
-            "interactive": false,
-                "textInputConfiguration": {
+    # Send system prompt
+    text_content_start = f'''
+    {{
+        "event": {{
+            "contentStart": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{content_name}",
+                "type": "TEXT",
+                "interactive": false,
+                "role": "SYSTEM",
+                "textInputConfiguration": {{
                     "mediaType": "text/plain"
-                }
-            }
-        }
-    }'''
+                }}
+            }}
+        }}
+    }}
+    '''
+    await send_event(text_content_start)
+    
+    system_prompt = (
+        "당신은 실시간 번역기입니다." 
+        "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
+        "번역한 내용만 답변합니다."        
+        "이전의 대화는 무시하고 현재 대화만 번역합니다."
+    )
 
-    TEXT_CONTENT_START_EVENT_INTERACTIVE = '''{
-        "event": {
-            "contentStart": {
-            "promptName": "%s",
-            "contentName": "%s",
-            "role": "%s",
-            "type": "TEXT",
-            "interactive": true,
-                "textInputConfiguration": {
+    text_input = f'''
+    {{
+        "event": {{
+            "textInput": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{content_name}",
+                "content": "{system_prompt}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(text_input)
+    
+    text_content_end = f'''
+    {{
+        "event": {{
+            "contentEnd": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{content_name}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(text_content_end)
+    
+    # Start processing responses
+    response = asyncio.create_task(_process_responses())
+
+async def start_audio_input():
+    """Start audio input stream."""
+    audio_content_start = f'''
+    {{
+        "event": {{
+            "contentStart": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{audio_content_name}",
+                "type": "AUDIO",
+                "interactive": true,
+                "role": "USER",
+                "audioInputConfiguration": {{
+                    "mediaType": "audio/lpcm",
+                    "sampleRateHertz": 16000,
+                    "sampleSizeBits": 16,
+                    "channelCount": 1,
+                    "audioType": "SPEECH",
+                    "encoding": "base64"
+                }}
+            }}
+        }}
+    }}
+    '''
+    await send_event(audio_content_start)
+
+async def send_audio_chunk(audio_bytes):
+    """Send an audio chunk to the stream."""
+    if not is_active:
+        return
+        
+    blob = base64.b64encode(audio_bytes)
+    audio_event = f'''
+    {{
+        "event": {{
+            "audioInput": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{audio_content_name}",
+                "content": "{blob.decode('utf-8')}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(audio_event)
+
+async def end_audio_input():
+    """End audio input stream."""
+    audio_content_end = f'''
+    {{
+        "event": {{
+            "contentEnd": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{audio_content_name}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(audio_content_end)
+
+async def start_text_input():
+    """Start text input stream."""
+    global text_content_name
+    text_content_name = str(uuid.uuid4())  # Generate new content name for each text input
+    text_content_start = f'''
+    {{
+        "event": {{
+            "contentStart": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{text_content_name}",
+                "role": "USER",
+                "type": "TEXT",
+                "interactive": true,
+                "textInputConfiguration": {{
                     "mediaType": "text/plain"
-                }
-            }
-        }
-    }'''
+                }}
+            }}
+        }}
+    }}
+    '''
+    await send_event(text_content_start)
 
-    TEXT_INPUT_EVENT = '''{
+async def send_text(text):
+    """Send text input to the stream."""
+    if not is_active:
+        return
+    
+    # Ensure text is a proper UTF-8 string
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', errors='replace')
+    elif not isinstance(text, str):
+        text = str(text)
+    
+    # Create text input event with proper JSON encoding
+    text_input_event = {
         "event": {
             "textInput": {
-            "promptName": "%s",
-            "contentName": "%s",
-            "content": "%s"
+                "promptName": prompt_name,
+                "contentName": text_content_name,
+                "content": text
             }
         }
-    }'''
+    }
+    text_event = json.dumps(text_input_event, ensure_ascii=False)
+    await send_event(text_event)
 
-    CONTENT_END_EVENT = '''{
-        "event": {
-            "contentEnd": {
-            "promptName": "%s",
-            "contentName": "%s"
-            }
-        }
-    }'''
+async def end_text_input():
+    """End text input stream."""
+    text_content_end = f'''
+    {{
+        "event": {{
+            "contentEnd": {{
+                "promptName": "{prompt_name}",
+                "contentName": "{text_content_name}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(text_content_end)
 
-    PROMPT_END_EVENT = '''{
-        "event": {
-            "promptEnd": {
-            "promptName": "%s"
-            }
-        }
-    }'''
-
-    SESSION_END_EVENT = '''{
+async def end_session():
+    """End the session."""
+    if not is_active:
+        return
+        
+    prompt_end = f'''
+    {{
+        "event": {{
+            "promptEnd": {{
+                "promptName": "{prompt_name}"
+            }}
+        }}
+    }}
+    '''
+    await send_event(prompt_end)
+    
+    session_end = '''
+    {
         "event": {
             "sessionEnd": {}
         }
-    }'''
+    }
+    '''
+    await send_event(session_end)
+    # close the stream
+    await stream.input_stream.close()
 
-    TOOL_CONTENT_START_EVENT = '''{
-        "event": {
-            "contentStart": {
-                "promptName": "%s",
-                "contentName": "%s",
-                "interactive": false,
-                "type": "TOOL",
-                "role": "TOOL",
-                "toolResultInputConfiguration": {
-                    "toolUseId": "%s",
-                    "type": "TEXT",
-                    "textInputConfiguration": {
-                        "mediaType": "text/plain"
-                    }
-                }
-            }
-        }
-    }'''
-    
-    def __init__(self, model_id='amazon.nova-2-sonic-v1:0', region='us-west-2'):
-        """Initialize the stream manager."""
-        self.model_id = model_id
-        self.region = region
-        self.input_subject = Subject()
-        self.output_subject = Subject()
-        self.audio_subject = Subject()
-
-        self.response_task = None
-        self.stream_response = None
-        self.is_active = False
-        self.barge_in = False
-        self.bedrock_client = None
-        self.scheduler = None
-
-        # Audio playback components
-        self.audio_output_queue = asyncio.Queue()
-
-        # Text response components
-        self.display_assistant_text = False
-        self.role = None
-
-        # Session information
-        self.prompt_name = str(uuid.uuid4())
-        self.content_name = str(uuid.uuid4())
-        self.audio_content_name = str(uuid.uuid4())
-        self.text_content_name = str(uuid.uuid4())
-        self.toolUseContent = ""
-        self.toolUseId = ""
-        self.toolName = ""
-
-        self.tool_processor = ToolProcessor()
-        self.pending_tool_tasks = {}
-
-        # Completion event to wait for proper shutdown
-        self.completion_event = asyncio.Event()
-
-    def _initialize_client(self):
-        """Initialize the Bedrock client."""
-        config = Config(
-            endpoint_uri= f"https://bedrock-runtime.{self.region}.amazonaws.com",
-            region=self.region,
-            aws_credentials_identity_resolver=EnvironmentCredentialsResolver(),
-        )
-        self.bedrock_client = BedrockRuntimeClient(config=config)
-    
-    async def initialize_stream(self):
-        """Initialize the bidirectional stream with Bedrock."""
-        if not self.bedrock_client:
-            self._initialize_client()
-        
-        self.scheduler = AsyncIOScheduler(asyncio.get_event_loop())      
-        try:
-            self.stream_response = await time_it_async("invoke_model_with_bidirectional_stream", lambda : self.bedrock_client.invoke_model_with_bidirectional_stream( InvokeModelWithBidirectionalStreamOperationInput(model_id=self.model_id)))
-
-            self.is_active = True
-            #default_system_prompt = "You are a warm, professional, and helpful male AI assistant. Give accurate answers that sound natural, direct, and human. Start by answering the user's question clearly in 1–2 sentences. Then, expand only enough to make the answer understandable, staying within 3–5 short sentences total. Avoid sounding like a lecture or essay."
-            default_system_prompt = (
-                "당신은 실시간 번역기입니다." 
-                "사용자가 한국어로 입력하면, 원문 그대로를 일본어로 번역하여 답변하세요."
-                "번역한 내용만 답변합니다."
-            )
-            default_speech_prompt = ""
-            # example speech prompt for indian
-            #default_speech_prompt = "If the input audio/speech contains hindi, then the transcription and response should be in All Devanagari script (Hindi)."
-
-            prompt_event = self.start_prompt()
-            text_content_start = self.TEXT_CONTENT_START_EVENT % (self.prompt_name, self.content_name, "SYSTEM")
-            text_content = self.system_prompt(default_system_prompt)
-            text_content_end = self.CONTENT_END_EVENT % (self.prompt_name, self.content_name)
-
-            speech_content_name = str(uuid.uuid4())
-            speech_content_start = self.TEXT_CONTENT_START_EVENT % (self.prompt_name, speech_content_name, "SYSTEM_SPEECH")
-            speech_content = self.TEXT_INPUT_EVENT % (self.prompt_name, speech_content_name, default_speech_prompt)
-            speech_content_end = self.CONTENT_END_EVENT % (self.prompt_name, speech_content_name)
+async def _process_responses():
+    """Process responses from the stream."""
+    try:
+        while is_active:
+            output = await stream.await_output()
+            result = await output[1].receive()
             
-            init_events = [self.START_SESSION_EVENT, prompt_event, text_content_start, text_content, text_content_end, speech_content_start, speech_content, speech_content_end]
-            
-            for event in init_events:
-                await self.send_raw_event(event)
-            
-            # Start listening for responses
-            self.response_task = asyncio.create_task(self._process_responses())
-            
-            # Set up subscription for input events
-            self.input_subject.pipe(
-                ops.subscribe_on(self.scheduler)
-            ).subscribe(
-                on_next=lambda event: asyncio.create_task(self.send_raw_event(event)),
-                on_error=lambda e: debug_print(f"Input stream error: {e}")
-            )
-            
-            # Set up subscription for audio chunks
-            self.audio_subject.pipe(
-                ops.subscribe_on(self.scheduler)
-            ).subscribe(
-                on_next=lambda audio_data: asyncio.create_task(self._handle_audio_input(audio_data)),
-                on_error=lambda e: debug_print(f"Audio stream error: {e}")
-            )
-            
-            debug_print("Stream initialized successfully")
-            return self
-        except Exception as e:
-            self.is_active = False
-            print(f"Failed to initialize stream: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise
-    
-    async def send_raw_event(self, event_json):
-        """Send a raw event JSON to the Bedrock stream."""
-        if not self.stream_response or not self.is_active:
-            debug_print("Stream not initialized or closed")
-            return
-        
-        # Ensure event_json is a string
-        if isinstance(event_json, bytes):
-            # If it's already bytes, decode it first
-            try:
-                event_json = event_json.decode('utf-8')
-            except UnicodeDecodeError:
-                # Try with error handling
-                event_json = event_json.decode('utf-8', errors='replace')
-        elif not isinstance(event_json, str):
-            event_json = str(event_json)
-        
-        # Encode to UTF-8 bytes
-        try:
-            event_bytes = event_json.encode('utf-8')
-        except (UnicodeEncodeError, AttributeError) as e:
-            debug_print(f"Error encoding event_json: {e}")
-            return
-        
-        event = InvokeModelWithBidirectionalStreamInputChunk(
-            value=BidirectionalInputPayloadPart(bytes_=event_bytes)
-        )
-        
-        try:
-            await self.stream_response.input_stream.send(event)
-            # For debugging large events, you might want to log just the type
-            if DEBUG:
-                if len(event_json) > 200:
-                    event_type = json.loads(event_json).get("event", {}).keys()
-                    debug_print(f"Sent event type: {list(event_type)}")
-                else:
-                    debug_print(f"Sent event: {event_json}")
-        except Exception as e:
-            debug_print(f"Error sending event: {str(e)}")
-            if DEBUG:
-                import traceback
-                traceback.print_exc()
-            self.input_subject.on_error(e)
-    
-    async def send_audio_content_start_event(self):
-        """Send a content start event to the Bedrock stream."""
-        content_start_event = self.CONTENT_START_EVENT % (self.prompt_name, self.audio_content_name)
-        await self.send_raw_event(content_start_event)
-    
-    async def send_text_content_start_event(self):
-        """Send a text content start event to the Bedrock stream."""
-        content_start_event = self.TEXT_CONTENT_START_EVENT_INTERACTIVE % (self.prompt_name, self.text_content_name, "USER")
-        await self.send_raw_event(content_start_event)
-    
-    async def send_text_input(self, text):
-        """Send text input to the Bedrock stream."""
-        if not self.is_active:
-            debug_print("Stream is not active")
-            return
-        
-        # Ensure text is a proper UTF-8 string
-        if isinstance(text, bytes):
-            # If text is bytes, decode it
-            try:
-                text = text.decode('utf-8')
-            except UnicodeDecodeError:
-                # Try with error handling
-                text = text.decode('utf-8', errors='replace')
-        elif not isinstance(text, str):
-            text = str(text)
-        
-        # Send text content start event
-        await self.send_text_content_start_event()
-        
-        # Send the text input event - create JSON directly to properly handle Unicode
-        text_input_event = {
-            "event": {
-                "textInput": {
-                    "promptName": self.prompt_name,
-                    "contentName": self.text_content_name,
-                    "content": text
-                }
-            }
-        }
-        text_event = json.dumps(text_input_event, ensure_ascii=False)
-        await self.send_raw_event(text_event)
-        
-        # Send text content end event
-        await self.send_text_content_end_event()
-        
-        debug_print(f"Sent text input: {text}")
-    
-    async def send_text_content_end_event(self):
-        """Send a text content end event to the Bedrock stream."""
-        content_end_event = self.CONTENT_END_EVENT % (self.prompt_name, self.text_content_name)
-        await self.send_raw_event(content_end_event)
-    
-    async def _handle_audio_input(self, data):
-        """Process audio input before sending it to the stream."""
-        audio_bytes = data.get('audio_bytes')
-        if not audio_bytes:
-            debug_print("No audio bytes received")
-            return
-        
-        try:
-            # Ensure the audio is properly formatted
-            debug_print(f"Processing audio chunk of size {len(audio_bytes)} bytes")
-            
-            # Base64 encode the audio data
-            blob = base64.b64encode(audio_bytes)
-            audio_event = self.AUDIO_EVENT_TEMPLATE % (self.prompt_name, self.audio_content_name, blob.decode('utf-8'))
-            
-            # Send the event directly
-            await self.send_raw_event(audio_event)
-        except Exception as e:
-            debug_print(f"Error processing audio: {e}")
-            if DEBUG:
-                import traceback
-                traceback.print_exc()
-    
-    def add_audio_chunk(self, audio_bytes):
-        """Add an audio chunk to the stream."""
-        self.audio_subject.on_next({
-            'audio_bytes': audio_bytes,
-            'prompt_name': self.prompt_name,
-            'content_name': self.audio_content_name
-        })
-    
-    async def send_audio_content_end_event(self):
-        """Send a content end event to the Bedrock stream."""
-        if not self.is_active:
-            debug_print("Stream is not active")
-            return
-        
-        content_end_event = self.CONTENT_END_EVENT % (self.prompt_name, self.audio_content_name)
-        await self.send_raw_event(content_end_event)
-        debug_print("Audio ended")
-    
-
-    async def send_tool_start_event(self, content_name, tool_use_id):
-        """Send a tool content start event to the Bedrock stream."""
-        content_start_event = self.TOOL_CONTENT_START_EVENT % (self.prompt_name, content_name, tool_use_id)
-        debug_print(f"Sending tool start event: {content_start_event}")  
-        await self.send_raw_event(content_start_event)
-
-    async def send_tool_result_event(self, content_name, tool_result):
-        """Send a tool content event to the Bedrock stream."""
-        tool_result_event = self.tool_result_event(content_name=content_name, content=tool_result, role="TOOL")
-        debug_print(f"Sending tool result event: {tool_result_event}")
-        await self.send_raw_event(tool_result_event)
-    
-    async def send_tool_content_end_event(self, content_name):
-        """Send a tool content end event to the Bedrock stream."""
-        tool_content_end_event = self.CONTENT_END_EVENT % (self.prompt_name, content_name)
-        debug_print(f"Sending tool content end event: {tool_content_end_event}")
-        await self.send_raw_event(tool_content_end_event)
-    
-    async def send_prompt_end_event(self):
-        """Close the stream and clean up resources."""
-        if not self.is_active:
-            debug_print("Stream is not active")
-            return
-        
-        prompt_end_event = self.PROMPT_END_EVENT % (self.prompt_name)
-        await self.send_raw_event(prompt_end_event)
-        debug_print("Prompt ended")
-        
-    async def send_session_end_event(self):
-        """Send a session end event to the Bedrock stream."""
-        if not self.is_active:
-            debug_print("Stream is not active")
-            return
-
-        await self.send_raw_event(self.SESSION_END_EVENT)
-        self.is_active = False
-        debug_print("Session ended")
-    
-
-    async def send_text_with_new_content_name(self, text):
-        """Send text input with a new content name for proper multi-turn conversation."""
-        # Ensure text is a proper UTF-8 string
-        if isinstance(text, bytes):
-            # If text is bytes, decode it
-            try:
-                text = text.decode('utf-8')
-            except UnicodeDecodeError:
-                # Try with error handling
-                text = text.decode('utf-8', errors='replace')
-        elif not isinstance(text, str):
-            text = str(text)
-        
-        # Generate new content name for each text input
-        new_text_content_name = str(uuid.uuid4())
-        
-        # Send text content start event
-        content_start_event = self.TEXT_CONTENT_START_EVENT_INTERACTIVE % (
-            self.prompt_name, 
-            new_text_content_name, 
-            "USER"
-        )
-        await self.send_raw_event(content_start_event)
-        
-        # Send the text input event - create JSON directly to properly handle Unicode
-        text_input_event = {
-            "event": {
-                "textInput": {
-                    "promptName": self.prompt_name,
-                    "contentName": new_text_content_name,
-                    "content": text
-                }
-            }
-        }
-        text_event = json.dumps(text_input_event, ensure_ascii=False)
-        await self.send_raw_event(text_event)
-        
-        # Send text content end event
-        content_end_event = self.CONTENT_END_EVENT % (
-            self.prompt_name, 
-            new_text_content_name
-        )
-        await self.send_raw_event(content_end_event)
-        
-        debug_print(f"Sent text input with content name {new_text_content_name}: {text}")
-        print(f"📝 Text sent: {text}\n")
-    
-    async def _process_responses(self):
-        """Process incoming responses from Bedrock."""
-        try:
-            # Keep processing responses until is_active becomes False or stream closes
-            while self.is_active:
-                try:
-                    output = await self.stream_response.await_output()
-                    result = await output[1].receive()
-
-                    if result.value and result.value.bytes_:
-                        try:
-                            response_data = result.value.bytes_.decode('utf-8')
-                            json_data = json.loads(response_data)
-                            # Handle different response types
-                            if 'event' in json_data:
-                                if 'contentStart' in json_data['event']:
-                                    debug_print("Content start detected")
-                                    content_start = json_data['event']['contentStart']
-                                    # set role
-                                    self.role = content_start['role']
-                                    # Check for speculative content
-                                    if 'additionalModelFields' in content_start:
-                                        try:
-                                            additional_fields = json.loads(content_start['additionalModelFields'])
-                                            if additional_fields.get('generationStage') == 'SPECULATIVE':
-                                                debug_print("Speculative content detected")
-                                                self.display_assistant_text = True
-                                            else:
-                                                self.display_assistant_text = False
-                                        except json.JSONDecodeError:
-                                            debug_print("Error parsing additionalModelFields")
-
-                                elif 'contentEnd' in json_data['event'] and json_data['event'].get('contentEnd', {}).get('type') == 'TOOL':
-                                    debug_print("Tool use content ended - processing tool")
-                                    self.handle_tool_request(self.toolName, self.toolUseContent, self.toolUseId)
-                                    debug_print("Tool processing started asynchronously")
-
-                                elif 'textOutput' in json_data['event']:
-                                    text_content = json_data['event']['textOutput']['content']
-                                    # Check if there is a barge-in
-                                    if '{ "interrupted" : true }' in text_content:
-                                        if DEBUG:
-                                            print("Barge-in detected. Stopping audio output.")
-                                        self.barge_in = True
-
-                                    if (self.role == "ASSISTANT" and self.display_assistant_text):
-                                        print(f"Assistant: {text_content}")
-                                    elif (self.role == "USER"):
-                                        print(f"User: {text_content}")
-
-                                elif 'toolUse' in json_data['event']:
-                                    self.toolUseContent = json_data['event']['toolUse']
-                                    self.toolName = json_data['event']['toolUse']['toolName']
-                                    self.toolUseId = json_data['event']['toolUse']['toolUseId']
-                                    print(f"Tool use detected: {self.toolName} (ID: {self.toolUseId})")
-
-                                elif 'contentEnd' in json_data['event']:
-                                    debug_print(f"Content end event: {json_data}")
-
-                                elif 'promptEnd' in json_data['event']:
-                                    debug_print("Prompt end event received")
-
-                                elif 'completionEnd' in json_data['event']:
-                                    debug_print("Completion end event received - model has finished final response")
-                                    # Signal that we've received the completion event
-                                    self.completion_event.set()
-
-                                elif 'audioOutput' in json_data['event']:
-                                    audio_content = json_data['event']['audioOutput']['content']
-                                    audio_bytes = base64.b64decode(audio_content)
-                                    await self.audio_output_queue.put(audio_bytes)
-
-                            self.output_subject.on_next(json_data)
-                        except json.JSONDecodeError:
-                            self.output_subject.on_next({"raw_data": response_data})
-                except StopAsyncIteration:
-                    # Stream has ended
-                    debug_print("Stream ended (StopAsyncIteration)")
-                    break
-                except Exception as e:
-                    debug_print(f"Error receiving response: {e}")
-                    self.output_subject.on_error(e)
-                    break
-        except Exception as e:
-            debug_print(f"Response processing error: {e}")
-            self.output_subject.on_error(e)
-        finally:
-            debug_print("Response processing loop exited")
-            self.output_subject.on_completed()
-
-    def handle_tool_request(self, tool_name, tool_content, tool_use_id):
-        """Handle a tool request asynchronously"""
-        tool_content_name = str(uuid.uuid4())
-        
-        task = asyncio.create_task(self._execute_tool_and_send_result(
-            tool_name, tool_content, tool_use_id, tool_content_name))
-        
-        self.pending_tool_tasks[tool_content_name] = task
-        
-        task.add_done_callback(
-            lambda t: self._handle_tool_task_completion(t, tool_content_name))
-    
-    def _handle_tool_task_completion(self, task, content_name):
-        """Handle the completion of a tool task"""
-        if content_name in self.pending_tool_tasks:
-            del self.pending_tool_tasks[content_name]
-        
-        if task.done() and not task.cancelled():
-            exception = task.exception()
-            if exception:
-                debug_print(f"Tool task failed: {str(exception)}")
-    
-    async def _execute_tool_and_send_result(self, tool_name, tool_content, tool_use_id, content_name):
-        """Execute a tool and send the result"""
-        try:
-            print(f"Starting tool execution: {tool_name}")
-            
-            # Execute tool and get result
-            tool_result = await self.tool_processor.process_tool_async(tool_name, tool_content)
-            
-            # Send the result
-            await self.send_tool_start_event(content_name, tool_use_id)
-            await self.send_tool_result_event(content_name, tool_result)
-            await self.send_tool_content_end_event(content_name)
-            
-            debug_print(f"Tool execution complete: {tool_name}, Status: {tool_result.get('status', 'N/A')}")
-            
-        except Exception as e:
-            debug_print(f"Error executing tool {tool_name}: {str(e)}")
-            # Send error response
-            try:
-                error_result = {
-                    "status": "error",
-                    "error": f"Tool execution failed: {str(e)}"
-                }
+            if result.value and result.value.bytes_:
+                response_data = result.value.bytes_.decode('utf-8')
+                json_data = json.loads(response_data)                    
                 
-                await self.send_tool_start_event(content_name, tool_use_id)
-                await self.send_tool_result_event(content_name, error_result)
-                await self.send_tool_content_end_event(content_name)
-            except Exception as send_error:
-                debug_print(f"Failed to send error response: {str(send_error)}")
-    
-
-
-    async def close(self):
-        """Close the stream properly."""
-        if not self.is_active:
-            return
-
-        debug_print("Starting graceful shutdown sequence...")
-
-        # Complete the subjects (stop sending new data)
-        self.input_subject.on_completed()
-        self.audio_subject.on_completed()
-
-        # Send end events to signal completion to the model
-        try:
-            await self.send_audio_content_end_event()
-            await self.send_prompt_end_event()
-            await self.send_session_end_event()
-
-            # Wait for the completionEnd event from the model with a timeout
-            debug_print("Waiting for completionEnd event from model...")
-            try:
-                await asyncio.wait_for(self.completion_event.wait(), timeout=5.0)
-                debug_print("Received completionEnd event, proceeding with cleanup")
-            except asyncio.TimeoutError:
-                debug_print("Timeout waiting for completionEnd event, proceeding with cleanup anyway")
-        except Exception as e:
-            debug_print(f"Error during shutdown sequence: {e}")
-
-        # Set is_active to False to signal _process_responses to exit
-        debug_print("Setting is_active to False to stop response processing")
-        self.is_active = False
-
-        # Wait for the response processing task to complete naturally
-        if self.response_task and not self.response_task.done():
-            debug_print("Waiting for response processing task to complete...")
-            try:
-                await asyncio.wait_for(self.response_task, timeout=2.0)
-                debug_print("Response processing task completed")
-            except asyncio.TimeoutError:
-                debug_print("Response processing task did not complete in time, cancelling...")
-                self.response_task.cancel()
-                try:
-                    await self.response_task
-                except asyncio.CancelledError:
-                    debug_print("Response processing task cancelled")
-
-        # Close the stream
-        if self.stream_response:
-            await self.stream_response.input_stream.close()
-
-        debug_print("Shutdown sequence complete")
-
-class AudioStreamer:
-    """Handles continuous microphone input and audio output using separate streams."""
-    
-    def __init__(self, stream_manager):
-        self.stream_manager = stream_manager
-        self.is_streaming = False
-        self.loop = asyncio.get_event_loop()
-
-        # Initialize PyAudio
-        debug_print("AudioStreamer Initializing PyAudio...")
-        self.p = time_it("AudioStreamerInitPyAudio", pyaudio.PyAudio)
-        debug_print("AudioStreamer PyAudio initialized")
-
-        # Initialize separate streams for input and output
-        # Input stream with callback for microphone
-        debug_print("Opening input audio stream...")
-        self.input_stream = time_it("AudioStreamerOpenAudio", lambda  : self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=INPUT_SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=CHUNK_SIZE,
-            stream_callback=self.input_callback
-        ))
-        debug_print("input audio stream opened")
-
-        # Output stream for direct writing (no callback)
-        debug_print("Opening output audio stream...")
-        self.output_stream = time_it("AudioStreamerOpenAudio", lambda  : self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=OUTPUT_SAMPLE_RATE,
-            output=True,
-            frames_per_buffer=CHUNK_SIZE
-        ))
-
-        debug_print("output audio stream opened")
-
-    def input_callback(self, in_data, frame_count, time_info, status):
-        """Callback function that schedules audio processing in the asyncio event loop"""
-        if self.is_streaming and in_data:
-            # Schedule the task in the event loop
-            asyncio.run_coroutine_threadsafe(
-                self.process_input_audio(in_data), 
-                self.loop
-            )
-        return (None, pyaudio.paContinue)
-
-    async def process_input_audio(self, audio_data):
-        """Process a single audio chunk directly"""
-        try:
-            # Send audio to Bedrock immediately
-            self.stream_manager.add_audio_chunk(audio_data)
-        except Exception as e:
-            if self.is_streaming:
-                print(f"Error processing input audio: {e}")
-    
-    async def play_output_audio(self):
-        """Play audio responses from Nova Sonic"""
-        while self.is_streaming:
-            try:
-                # Check for barge-in flag
-                if self.stream_manager.barge_in:
-                    # Clear the audio queue
-                    while not self.stream_manager.audio_output_queue.empty():
-                        try:
-                            self.stream_manager.audio_output_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    self.stream_manager.barge_in = False
-                    # Small sleep after clearing
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                # Get audio data from the stream manager's queue
-                audio_data = await asyncio.wait_for(
-                    self.stream_manager.audio_output_queue.get(),
-                    timeout=0.1
-                )
-                
-                if audio_data and self.is_streaming:
-                    # Write directly to the output stream in smaller chunks
-                    chunk_size = CHUNK_SIZE  # Use the same chunk size as the stream
-                    
-                    # Write the audio data in chunks to avoid blocking too long
-                    for i in range(0, len(audio_data), chunk_size):
-                        if not self.is_streaming:
-                            break
+                if 'event' in json_data:
+                    # Handle content start event
+                    if 'contentStart' in json_data['event']:
+                        # print(f"json_data: {json_data}")
+                        content_start = json_data['event']['contentStart'] 
+                        # set role
+                        role = content_start['role']
+                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
-                        end = min(i + chunk_size, len(audio_data))
-                        chunk = audio_data[i:end]
+                        # Check for speculative content
+                        if 'additionalModelFields' in content_start:
+                            additional_fields = json.loads(content_start['additionalModelFields'])
+                            #print(f" additionalModelFields: {additional_fields}")
+                            if additional_fields.get('generationStage') == 'SPECULATIVE':
+                                display_assistant_text = True
+                            else:
+                                display_assistant_text = False
+                            
+                    # Handle text output event
+                    elif 'textOutput' in json_data['event']:
+                        text = json_data['event']['textOutput']['content']    
                         
-                        # Create a new function that captures the chunk by value
-                        def write_chunk(data):
-                            return self.output_stream.write(data)
-                        
-                        # Pass the chunk to the function
-                        await asyncio.get_event_loop().run_in_executor(None, write_chunk, chunk)
-                        
-                        # Brief yield to allow other tasks to run
-                        await asyncio.sleep(0.001)
+                        if (role == "ASSISTANT" and display_assistant_text):
+                            print(f"Assistant: {text}")
+                        elif role == "USER":
+                            print(f"User: {text}")
                     
-            except asyncio.TimeoutError:
-                # No data available within timeout, just continue
-                continue
-            except Exception as e:
-                if self.is_streaming:
-                    print(f"Error playing output audio: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-                await asyncio.sleep(0.05)
-    
-    async def start_streaming(self):
-        """Start streaming audio."""
-        if self.is_streaming:
-            return
-        
-        print("Starting audio streaming. Speak into your microphone...")
-        print("Press Enter to stop streaming...")
-        
-        # Send audio content start event
-        await time_it_async("send_audio_content_start_event", lambda : self.stream_manager.send_audio_content_start_event())
-        
-        self.is_streaming = True
-        
-        # Start the input stream if not already started
-        if not self.input_stream.is_active():
-            self.input_stream.start_stream()
-        
-        # Start processing tasks
-        self.output_task = asyncio.create_task(self.play_output_audio())
-        
-        # Wait for user to press Enter to stop
-        await asyncio.get_event_loop().run_in_executor(None, input)
-        
-        # Once input() returns, stop streaming
-        await self.stop_streaming()
-    
-    async def stop_streaming(self):
-        """Stop streaming audio."""
-        if not self.is_streaming:
-            return
-            
-        self.is_streaming = False
+                    # Handle audio output
+                    elif 'audioOutput' in json_data['event']:
+                        # print(f"audio...")
+                        audio_content = json_data['event']['audioOutput']['content']
+                        audio_bytes = base64.b64decode(audio_content)
+                        await audio_queue.put(audio_bytes)
 
-        # Cancel the tasks
-        tasks = []
-        if hasattr(self, 'input_task') and not self.input_task.done():
-            tasks.append(self.input_task)
-        
-        if hasattr(self, 'output_task') and not self.output_task.done():
-            tasks.append(self.output_task)
-        
-        for task in tasks:
-            task.cancel()
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Stop and close the streams
-        if self.input_stream:
-            if self.input_stream.is_active():
-                self.input_stream.stop_stream()
-            self.input_stream.close()
-        
-        if self.output_stream:
-            if self.output_stream.is_active():
-                self.output_stream.stop_stream()
-            self.output_stream.close()
-        
-        if self.p:
-            self.p.terminate()
-        print("Audio streaming stopped.")
-        await self.stream_manager.close()
+                    # elif 'completionStart' in json_data['event']:
+                    #     completionId = json_data['event']['completionStart']['completionId']
+                    #     print(f"-> completionStart: {completionId}")                            
+                    # elif 'contentEnd' in json_data['event']:
+                    #     print(f"-> contentEnd")
+                    #elif 'usageEvent' in json_data['event']:
+                    #    print(f"usageEvent...")
+                    # else:
+                    #     print(f"json_data: {json_data}")
+    except Exception as e:
+        print(f"Error processing responses: {e}")
 
-class SilentAudioStreamer(AudioStreamer):
-    """AudioStreamer that sends silent audio for text-only mode."""
-    
-    def __init__(self, stream_manager):
-        self.stream_manager = stream_manager
-        self.is_streaming = False
-        self.loop = asyncio.get_event_loop()
-        self.silent_task = None
-        
-        # Initialize PyAudio for output only (no microphone input)
-        debug_print("SilentAudioStreamer Initializing PyAudio...")
-        self.p = time_it("SilentAudioStreamerInitPyAudio", pyaudio.PyAudio)
-        debug_print("SilentAudioStreamer PyAudio initialized")
-
-        # Output stream for audio responses
-        debug_print("Opening output audio stream...")
-        self.output_stream = time_it("SilentAudioStreamerOpenAudio", lambda: self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=OUTPUT_SAMPLE_RATE,
-            output=True,
-            frames_per_buffer=CHUNK_SIZE
-        ))
-        debug_print("output audio stream opened")
-
-    async def start_streaming(self):
-        """Start streaming silent audio and playing responses."""
-        if self.is_streaming:
-            return
-        
-        print("Starting silent audio streaming for text mode...")
-        
-        # Send audio content start event
-        await time_it_async("send_audio_content_start_event", lambda: self.stream_manager.send_audio_content_start_event())
-        
-        self.is_streaming = True
-        
-        # Start silent audio input task and audio output task
-        self.silent_task = asyncio.create_task(self._send_silent_audio())
-        self.output_task = asyncio.create_task(self.play_output_audio())
-        
-        # Small delay to ensure streaming is established
-        await asyncio.sleep(0.1)
-    
-    async def _send_silent_audio(self):
-        """Send continuous silent audio chunks."""
-        # Create silent audio chunk (16-bit PCM, 16kHz, mono)
-        silent_chunk_size = CHUNK_SIZE * 2  # 2 bytes per sample for 16-bit
-        silent_chunk = b'\x00' * silent_chunk_size
-        
-        while self.is_streaming:
-            try:
-                # Send silent audio chunk
-                self.stream_manager.add_audio_chunk(silent_chunk)
-                
-                # Wait for next chunk (maintain ~16kHz sample rate) - reduced delay for better responsiveness
-                await asyncio.sleep(0.01)  # 10ms instead of calculated delay
-                
-            except Exception as e:
-                if self.is_streaming:
-                    debug_print(f"Error sending silent audio: {e}")
-                break
-
-    async def stop_streaming(self):
-        """Stop streaming silent audio."""
-        if not self.is_streaming:
-            return
-            
-        self.is_streaming = False
-
-        # Cancel the tasks
-        tasks = []
-        if self.silent_task and not self.silent_task.done():
-            tasks.append(self.silent_task)
-        
-        if hasattr(self, 'output_task') and not self.output_task.done():
-            tasks.append(self.output_task)
-        
-        for task in tasks:
-            task.cancel()
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Close the output stream
-        if self.output_stream:
-            if self.output_stream.is_active():
-                self.output_stream.stop_stream()
-            self.output_stream.close()
-        
-        if self.p:
-            self.p.terminate()
-        
-        await self.stream_manager.close()
-
-
-class TextInputHandler:
-    """Handles text input from terminal and manages conversation flow with interruption support."""
-    
-    def __init__(self, stream_manager):
-        self.stream_manager = stream_manager
-        self.is_active = False
-        self.audio_streamer = None
-        self.silent_streamer = None
-        self.input_task = None
-        self.waiting_for_response = False
-        
-    async def start_text_conversation(self):
-        """Start a text-based conversation with Nova Sonic using silent audio streaming."""
-        self.is_active = True
-        
-        print("\n=== Nova Sonic Text Chat ===")
-        print("Commands:")
-        print("  - Type your message and press Enter to send")
-        print("  - Press Enter during assistant response to interrupt")
-        print("  - Type 'audio' to switch to audio mode")
-        print("  - Type 'quit' or 'exit' to end the conversation")
-        print("  - Type 'help' to see this menu again")
-        print("\nStart chatting!\n")
-        
-        # Start silent audio streaming to maintain Nova Sonic connection
-        self.silent_streamer = SilentAudioStreamer(self.stream_manager)
-        await self.silent_streamer.start_streaming()
-        
-        try:
-            # Start continuous input handling
-            self.input_task = asyncio.create_task(self._handle_continuous_input())
-            
-            # Wait for the input task to complete
-            await self.input_task
-            
-        finally:
-            # Stop silent streaming
-            if self.silent_streamer:
-                await self.silent_streamer.stop_streaming()
-        
-        self.is_active = False
-        await self.stream_manager.close()
-    
-    async def _handle_continuous_input(self):
-        """Handle continuous text input with interruption capability."""
-        while self.is_active:
-            try:
-                # Get user input (non-blocking with timeout to allow interruption)
-                try:
-                    user_input = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: input("You: ")
-                        ),
-                        timeout=None  # No timeout, but allows for cancellation
-                    )
-                    
-                    # Ensure user_input is a proper UTF-8 string
-                    # Handle case where input() might return bytes or incorrectly encoded string
-                    if isinstance(user_input, bytes):
-                        try:
-                            user_input = user_input.decode('utf-8')
-                        except UnicodeDecodeError:
-                            # Try to decode with error handling
-                            user_input = user_input.decode('utf-8', errors='replace')
-                    elif not isinstance(user_input, str):
-                        user_input = str(user_input)
-                    
-                except asyncio.CancelledError:
-                    break
-
-                # Handle special commands
-                if user_input.lower() in ['quit', 'exit']:
-                    print("\n👋 Goodbye! Ending text conversation...")
-                    # Don't set is_active = False here - let close() handle it
-                    break
-                elif user_input.lower() == 'help':
-                    print("\nCommands:")
-                    print("  - Type your message and press Enter to send")
-                    print("  - Press Enter during assistant response to interrupt")
-                    print("  - Type 'audio' to switch to audio mode")
-                    print("  - Type 'quit' or 'exit' to end the conversation")
-                    print("  - Type 'help' to see this menu again\n")
-                    continue
-                elif user_input.lower() == 'audio':
-                    await self.switch_to_audio_mode()
-                    continue
-                elif user_input.strip() == '' and self.waiting_for_response:
-                    # Interrupt current response
-                    print("\n[Interrupting assistant response...]")
-                    self.stream_manager.barge_in = True
-                    self.waiting_for_response = False
-                    continue
-                elif user_input.strip() == '':
-                    continue
-                
-                # Send text input to Nova Sonic with new content name for each message
-                self.waiting_for_response = False
-                await self.stream_manager.send_text_with_new_content_name(user_input)
-                
-                # Brief pause to allow response to start
-                await asyncio.sleep(0.1)
-                
-                
-            except KeyboardInterrupt:
-                print("\nConversation interrupted by user")
-                break
-            except Exception as e:
-                print(f"Error in text conversation: {e}")
-                if DEBUG:
-                    import traceback
-                    traceback.print_exc()
-                self.waiting_for_response = False
-    
-
-    
-    async def switch_to_audio_mode(self):
-        """Switch from text mode to audio mode."""
-        print("\nSwitching to audio mode...")
-        
-        # Initialize audio streamer if not already done
-        if not self.audio_streamer:
-            self.audio_streamer = AudioStreamer(self.stream_manager)
-        
-        # Start audio streaming
-        await self.audio_streamer.start_streaming()
-        
-        # After audio mode ends, return to text mode
-        print("\nReturning to text mode...")
-        print("Continue typing your messages:\n")
-
-async def main_with_mode_selection(debug=False):
-    """Main function with mode selection (text or audio)."""
-    global DEBUG
-    DEBUG = debug
-
-    # Create stream manager
-    stream_manager = BedrockStreamManager(model_id='amazon.nova-2-sonic-v1:0', region='us-west-2')
-
-    # Initialize the stream
-    await time_it_async("initialize_stream", stream_manager.initialize_stream)
-
-    time.sleep(1)
+async def play_audio():
+    """Play audio responses."""
+    p = pyaudio.PyAudio()
+    stream = p.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=OUTPUT_SAMPLE_RATE,
+        output=True,
+        frames_per_buffer=CHUNK_SIZE
+    )
 
     try:
-        print("Starting text-only mode...")
-        text_handler = TextInputHandler(stream_manager)
-        time.sleep(1)
-        await text_handler.start_text_conversation()
-        
-    except KeyboardInterrupt:
-        print("Interrupted by user")
+        while is_active:
+            audio_data = await audio_queue.get()
+
+            # Write the audio data in chunks to avoid blocking
+            for i in range(0, len(audio_data), CHUNK_SIZE):
+                if not is_active:
+                    break
+
+                end = min(i + CHUNK_SIZE, len(audio_data))
+                chunk = audio_data[i:end]
+
+                # Write chunk in executor to avoid blocking the event loop
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    stream.write,
+                    chunk
+                )
+
+                # Brief yield to allow other tasks to run
+                await asyncio.sleep(0.001)
+
+    except Exception as e:
+        print(f"Error playing audio: {e}")
     finally:
-        # Clean up
-        await stream_manager.close()
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        print("Audio playing stopped.")
+
+async def capture_audio():
+    """Capture audio from microphone and send to Nova Sonic."""
+    p = pyaudio.PyAudio()
+    stream = p.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=INPUT_SAMPLE_RATE,
+        input=True,
+        frames_per_buffer=CHUNK_SIZE
+    )
+    
+    print("Starting audio capture. Speak into your microphone...")
+    print("Press Enter to stop...")
+    
+    await start_audio_input()
+    
+    try:
+        while is_active:
+            audio_data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            # print(f"-> audioInput: {audio_data[:10]}...")
+            await send_audio_chunk(audio_data)
+            await asyncio.sleep(0.01)
+    except Exception as e:
+        print(f"Error capturing audio: {e}")
+    finally:
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        print("Audio capture stopped.")
+        await end_audio_input()
+
+async def send_silent_audio():
+    """Send continuous silent audio chunks to maintain audio stream."""
+    # Create silent audio chunk (16-bit PCM, 16kHz, mono)
+    silent_chunk_size = CHUNK_SIZE * 2  # 2 bytes per sample for 16-bit
+    silent_chunk = b'\x00' * silent_chunk_size
+    
+    while is_active:
+        try:
+            # Send silent audio chunk
+            await send_audio_chunk(silent_chunk)
+            # Wait for next chunk (maintain ~16kHz sample rate)
+            await asyncio.sleep(0.01)  # 10ms delay
+        except Exception as e:
+            if is_active:
+                print(f"Error sending silent audio: {e}")
+            break
+
+async def read_text():
+    """Read text input from user and send to Nova Sonic."""
+    print("Starting text input mode. Type your message and press Enter...")
+    print("Press Enter (empty line) to stop...")
+    
+    # Start audio input stream (required for audio output)
+    await start_audio_input()
+    
+    # Start silent audio task to maintain audio stream
+    silent_audio_task = asyncio.create_task(send_silent_audio())
+    
+    try:
+        while is_active:
+            # Get user input
+            user_input = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: input("You: ")
+            )
+            
+            # Check if user wants to stop
+            if user_input.strip() == '':
+                print("Stopping text input...")
+                break
+            
+            # Ensure proper UTF-8 encoding handling
+            if isinstance(user_input, bytes):
+                # If somehow bytes, decode with error handling
+                user_input = user_input.decode('utf-8', errors='replace')
+            elif not isinstance(user_input, str):
+                user_input = str(user_input)
+            
+            # Normalize the string to ensure valid UTF-8
+            # Encode and decode to catch any encoding issues early
+            try:
+                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
+            except (UnicodeEncodeError, UnicodeDecodeError) as e:
+                print(f"Warning: Encoding issue detected, using error replacement: {e}")
+                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
+            
+            # Send text input to Nova Sonic
+            await start_text_input()
+            await send_text(user_input)
+            await end_text_input()
+            
+            print(f"📝 Text sent: {user_input}\n")
+            
+    except Exception as e:
+        print(f"Error reading text: {e}")
+    finally:
+        # Stop silent audio task
+        if not silent_audio_task.done():
+            silent_audio_task.cancel()
+            try:
+                await silent_audio_task
+            except asyncio.CancelledError:
+                pass
+        
+        # End audio input
+        await end_audio_input()
+        print("Text input stopped.")
+
+async def main():
+    global is_active
+    # Start session
+    await start_session()
+    
+    # Start audio playback task
+    playback_task = asyncio.create_task(play_audio())
+    
+    # Start text input task (replacing audio capture)
+    text_task = asyncio.create_task(read_text())
+    
+    # Wait for text input task to complete
+    await text_task
+        
+    # First cancel the tasks
+    tasks = []
+    if not playback_task.done():
+        tasks.append(playback_task)
+    if not text_task.done():
+        tasks.append(text_task)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # End session
+    await end_session()
+    is_active = False
+
+    # cancel the response task
+    if response and not response.done():
+        response.cancel()
+
+    print("Session ended")
 
 if __name__ == "__main__":
+    # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
+    # This will only set environment variables if they are not already set
     load_aws_credentials_from_config()
 
-    try:
-        asyncio.run(main_with_mode_selection(debug=False))
-    except Exception as e:
-        print(f"Application error: {e}")
-        pass
+    asyncio.run(main())
