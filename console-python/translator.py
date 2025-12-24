@@ -520,10 +520,38 @@ async def send_silent_audio():
                 print(f"Error sending silent audio: {e}")
             break
 
-async def read_text():
-    """Read text input from user and send to Nova Sonic."""
-    print("Starting text input mode. Type your message and press Enter...")
-    print("Press Enter (empty line) to stop...")
+async def process_text_input(user_input):
+    """Process text input and send to Nova Sonic."""
+    # Ensure proper UTF-8 encoding handling
+    if isinstance(user_input, bytes):
+        # If somehow bytes, decode with error handling
+        user_input = user_input.decode('utf-8', errors='replace')
+    elif not isinstance(user_input, str):
+        user_input = str(user_input)
+    
+    # Normalize the string to ensure valid UTF-8
+    # Encode and decode to catch any encoding issues early
+    try:
+        user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        print(f"Warning: Encoding issue detected, using error replacement: {e}")
+        user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
+    
+    # Send text input to Nova Sonic
+    await start_text_input()
+    await send_text(user_input)
+    await end_text_input()
+    
+    print(f"📝 Text sent: {user_input}\n")
+
+async def run_translator():
+    global is_active
+    # Start session
+    await start_session()
+    
+    # Start audio playback task
+    print("Starting audio playback task...")
+    playback_task = asyncio.create_task(play_audio())
     
     # Start audio input stream (required for audio output)
     await start_audio_input()
@@ -531,8 +559,12 @@ async def read_text():
     # Start silent audio task to maintain audio stream
     silent_audio_task = asyncio.create_task(send_silent_audio())
     
+    print("Starting text input mode. Type your message and press Enter...")
+    print("Type 'quit' or press Enter (empty line) to stop...")
+    
     try:
         while is_active:
+            print("Waiting for user input...")
             # Get user input
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -540,31 +572,15 @@ async def read_text():
             )
             
             # Check if user wants to stop
+            if user_input.strip().lower() == 'quit':
+                print("Quitting...")
+                break
             if user_input.strip() == '':
                 print("Stopping text input...")
                 break
             
-            # Ensure proper UTF-8 encoding handling
-            if isinstance(user_input, bytes):
-                # If somehow bytes, decode with error handling
-                user_input = user_input.decode('utf-8', errors='replace')
-            elif not isinstance(user_input, str):
-                user_input = str(user_input)
-            
-            # Normalize the string to ensure valid UTF-8
-            # Encode and decode to catch any encoding issues early
-            try:
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
-            except (UnicodeEncodeError, UnicodeDecodeError) as e:
-                print(f"Warning: Encoding issue detected, using error replacement: {e}")
-                user_input = user_input.encode('utf-8', errors='replace').decode('utf-8')
-            
-            # Send text input to Nova Sonic
-            await start_text_input()
-            await send_text(user_input)
-            await end_text_input()
-            
-            print(f"📝 Text sent: {user_input}\n")
+            # Process text input
+            await process_text_input(user_input)
             
     except Exception as e:
         print(f"Error reading text: {e}")
@@ -580,31 +596,18 @@ async def read_text():
         # End audio input
         await end_audio_input()
         print("Text input stopped.")
-
-async def main():
-    global is_active
-    # Start session
-    await start_session()
-    
-    # Start audio playback task
-    playback_task = asyncio.create_task(play_audio())
-    
-    # Start text input task (replacing audio capture)
-    text_task = asyncio.create_task(read_text())
-    
-    # Wait for text input task to complete
-    await text_task
         
-    # First cancel the tasks
-    tasks = []
-    if not playback_task.done():
-        tasks.append(playback_task)
-    if not text_task.done():
-        tasks.append(text_task)
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # First cancel the tasks
+        tasks = []
+        if not playback_task.done():
+            print("Cancelling audio playback task...")
+            tasks.append(playback_task)
+        for task in tasks:
+            print(f"Cancelling task: {task}")
+            task.cancel()
+        if tasks:
+            print("Gathering tasks...")
+            await asyncio.gather(*tasks, return_exceptions=True)
     
     # End session
     await end_session()
@@ -621,4 +624,4 @@ if __name__ == "__main__":
     # This will only set environment variables if they are not already set
     load_aws_credentials_from_config()
 
-    asyncio.run(main())
+    asyncio.run(run_translator())
