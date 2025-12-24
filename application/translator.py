@@ -86,6 +86,10 @@ def load_aws_credentials_from_config(profile='default'):
                 if region:
                     os.environ['AWS_DEFAULT_REGION'] = region
 
+# Load AWS credentials if not already loaded
+logger.info("Loading AWS credentials...")
+load_aws_credentials_from_config()
+
 model_id = 'amazon.nova-2-sonic-v1:0'
 region = 'us-west-2'
 client = None
