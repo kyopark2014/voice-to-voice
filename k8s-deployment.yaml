@@ -14,6 +14,7 @@ spec:
       labels:
         app: speech-to-speech
     spec:
+      serviceAccountName: speech-to-speech-sa
       containers:
       - name: speech-to-speech
         image: 262976740991.dkr.ecr.us-west-2.amazonaws.com/speech-to-speech:latest
@@ -22,6 +23,8 @@ spec:
         env:
         - name: AWS_DEFAULT_REGION
           value: "us-west-2"
+        - name: AWS_REGION
+          value: "us-west-2"
         resources:
           requests:
             memory: "512Mi"
@@ -29,6 +32,18 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 5
+          periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service

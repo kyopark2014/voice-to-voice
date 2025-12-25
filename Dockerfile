@@ -31,7 +31,7 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     && unzip awscliv2.zip \
     && ./aws/install \
     && rm -rf aws awscliv2.zip
- 
+
 # AWS credentials will be passed at build time via ARG
 ARG AWS_ACCESS_KEY_ID
 ARG AWS_SECRET_ACCESS_KEY
@@ -54,7 +54,7 @@ RUN if [ ! -z "$AWS_ACCESS_KEY_ID" ] && [ ! -z "$AWS_SECRET_ACCESS_KEY" ]; then 
 
 # Create config file
 RUN echo "[default]" > /root/.aws/config && \
-    echo "region = ${AWS_DEFAULT_REGION:-us-east-1}" >> /root/.aws/config && \
+    echo "region = ${AWS_DEFAULT_REGION:-us-west-2}" >> /root/.aws/config && \
     echo "output = json" >> /root/.aws/config && \
     chmod 600 /root/.aws/config
 
