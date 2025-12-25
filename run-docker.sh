@@ -20,11 +20,22 @@ else
 fi
 
 # Check if image exists
-if ! sudo docker images | grep -q "${DOCKER_NAME}.*latest"; then
+echo "🔍 Checking for Docker image '${DOCKER_NAME}:latest'..."
+IMAGE_EXISTS=$(sudo docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${DOCKER_NAME}:latest$" && echo "yes" || echo "no")
+if [ "$IMAGE_EXISTS" != "yes" ]; then
     echo "❌ Docker image '${DOCKER_NAME}:latest' not found."
     echo "   Please build the image first using:"
     echo "   ./build-docker.sh"
     exit 1
+else
+    echo "✅ Docker image found: ${DOCKER_NAME}:latest"
+    # Verify image actually exists by inspecting it
+    if ! sudo docker inspect ${DOCKER_NAME}:latest >/dev/null 2>&1; then
+        echo "❌ Docker image '${DOCKER_NAME}:latest' exists but cannot be inspected."
+        echo "   The image may be corrupted. Please rebuild using:"
+        echo "   ./build-docker.sh"
+        exit 1
+    fi
 fi
 
 # Stop and remove existing container if it exists
@@ -35,11 +46,11 @@ sudo docker rm ${DOCKER_NAME}-container 2>/dev/null || true
 # Disable OpenTelemetry for local development
 echo "🔍 OpenTelemetry disabled for local development"
 
-# Run Docker container
+# Run Docker container with x86_64 architecture (EKS node compatibility)
 echo ""
-echo "🚀 Starting Docker container..."
+echo "🚀 Starting Docker container for x86_64 architecture..."
 sudo docker run -d \
-    --platform linux/arm64 \
+    --platform linux/amd64 \
     --name ${DOCKER_NAME}-container \
     -p 8501:8501 \
     ${DOCKER_NAME}:latest

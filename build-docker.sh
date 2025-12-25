@@ -27,11 +27,11 @@ else
     echo "⚠️  config.json not found, using default DOCKER_NAME: ${DOCKER_NAME}"
 fi
 
-# Build Docker image with build arguments
+# Build Docker image with build arguments for x86_64 architecture (EKS node compatibility)
 echo ""
-echo "🔨 Building Docker image with ARG credentials..."
+echo "🔨 Building Docker image with ARG credentials for x86_64 architecture..."
 sudo docker build \
-    --platform linux/arm64 \
+    --platform linux/amd64 \
     --build-arg AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
     --build-arg AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
     --build-arg AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
