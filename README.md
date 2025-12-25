@@ -9,8 +9,9 @@
 <img width="680" height="338" alt="image" src="https://github.com/user-attachments/assets/d6944f50-8b7c-464a-b143-a59a3214502e" />
 
 
+### Python 
 
-
+aws_sdk_bedrock_runtime 패키지가 python 3.12이상입니다.
 
 
 ## 대화
