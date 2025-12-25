@@ -57,15 +57,6 @@ brew install portaudio
 source .venv/bin/activate && python nova_sonic_simple.py
 ```
 
-[Introducing gpt-realtime in the API](https://www.youtube.com/watch?v=nfBbmtMJhX0)
-
-[Building voice agents with OpenAI — Dominik Kundel, OpenAI](https://www.youtube.com/watch?v=iXhba366fQc)
-
-chained voice agent: tone, longer delay, context 문제 
-
-speech-to-speech voice agent: 
-
-
 ## Reference 
 
 [Amazon Nova Sonic Python Streaming Implementation](https://github.com/aws-samples/amazon-nova-samples/tree/main/speech-to-speech/sample-codes/console-python)
