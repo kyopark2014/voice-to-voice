@@ -118,11 +118,15 @@ use_streamlit_audio = False  # Set to True when running in Streamlit/Docker
 
 def _initialize_client(region):
     """Initialize the Bedrock client."""
-    config = Config(
-        endpoint_uri=f"https://bedrock-runtime.{region}.amazonaws.com",
-        region=region,
-        aws_credentials_identity_resolver=EnvironmentCredentialsResolver(),
-    )
+    config_params = {
+        "endpoint_uri": f"https://bedrock-runtime.{region}.amazonaws.com",
+        "region": region,
+    }
+    
+    if os.getenv("AWS_ACCESS_KEY_ID"):
+        config_params["aws_credentials_identity_resolver"] = EnvironmentCredentialsResolver()
+    
+    config = Config(**config_params)
     client = BedrockRuntimeClient(config=config)
 
     return client
