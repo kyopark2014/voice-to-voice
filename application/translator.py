@@ -4,6 +4,8 @@ import base64
 import json
 import uuid
 import pyaudio
+import wave
+from io import BytesIO
 from pathlib import Path
 from configparser import ConfigParser
 from concurrent.futures._base import InvalidStateError
@@ -110,6 +112,9 @@ role = None
 display_assistant_text = False
 is_active = False
 sonic_client = None
+# Audio chunks collected for Streamlit playback
+audio_chunks = []
+use_streamlit_audio = False  # Set to True when running in Streamlit/Docker
 
 def _initialize_client(region):
     """Initialize the Bedrock client."""
@@ -545,46 +550,67 @@ async def _process_responses():
 
 async def play_audio():
     """Play audio responses."""
-    global is_active
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=OUTPUT_SAMPLE_RATE,
-        output=True,
-        frames_per_buffer=CHUNK_SIZE
-    )
+    global is_active, audio_chunks
+    
+    # If running in Streamlit/Docker, collect audio chunks instead of playing
+    if use_streamlit_audio:
+        logger.info("Collecting audio chunks for Streamlit playback...")
+        try:
+            while is_active:
+                try:
+                    audio_data = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
+                    audio_chunks.append(audio_data)
+                    logger.debug(f"Collected audio chunk: {len(audio_data)} bytes")
+                except asyncio.TimeoutError:
+                    # Check if still active
+                    if not is_active:
+                        break
+                    continue
+        except Exception as e:
+            logger.info(f"Error collecting audio: {e}")
+        finally:
+            logger.info(f"Audio collection stopped. Total chunks: {len(audio_chunks)}")
+    else:
+        # Original pyaudio playback for console/local use
+        p = pyaudio.PyAudio()
+        stream = p.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=OUTPUT_SAMPLE_RATE,
+            output=True,
+            frames_per_buffer=CHUNK_SIZE
+        )
 
-    try:
-        while is_active:
-            audio_data = await audio_queue.get()
+        try:
+            while is_active:
+                audio_data = await audio_queue.get()
 
-            # Write the audio data in chunks to avoid blocking
-            for i in range(0, len(audio_data), CHUNK_SIZE):
-                if not is_active:
-                    break
+                # Write the audio data in chunks to avoid blocking
+                for i in range(0, len(audio_data), CHUNK_SIZE):
+                    if not is_active:
+                        break
 
-                end = min(i + CHUNK_SIZE, len(audio_data))
-                chunk = audio_data[i:end]
+                    end = min(i + CHUNK_SIZE, len(audio_data))
+                    chunk = audio_data[i:end]
 
-                # Write chunk in executor to avoid blocking the event loop
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    stream.write,
-                    chunk
-                )
+                    # Write chunk in executor to avoid blocking the event loop
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        stream.write,
+                        chunk
+                    )
 
-                # Brief yield to allow other tasks to run
-                await asyncio.sleep(0.001)
+                    # Brief yield to allow other tasks to run
+                    await asyncio.sleep(0.001)
 
-    except Exception as e:
-        logger.info(f"Error playing audio: {e}")
-    finally:
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
-        logger.info("Audio playing stopped.")
-        is_active = False
+        except Exception as e:
+            logger.info(f"Error playing audio: {e}")
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            logger.info("Audio playing stopped.")
+            is_active = False
 
 async def capture_audio():
     """Capture audio from microphone and send to Nova Sonic."""
@@ -704,7 +730,10 @@ async def _read_stdin_to_queue():
             await input_queue.put('__stop__')
 
 async def translate(language):
-    global is_active, response, output_queue, input_queue, audio_queue
+    global is_active, response, output_queue, input_queue, audio_queue, audio_chunks
+    
+    # Reset audio chunks for new translation session
+    audio_chunks = []
     
     # Ensure queues are created in the current event loop
     # This prevents "bound to a different event loop" errors
@@ -851,3 +880,32 @@ async def translate(language):
         response.cancel()
 
     logger.info("Session ended")
+
+def get_audio_wav_bytes():
+    """Convert collected audio chunks to WAV format bytes for Streamlit playback."""
+    global audio_chunks
+    
+    if not audio_chunks:
+        return None
+    
+    # Combine all audio chunks
+    audio_data = b''.join(audio_chunks)
+    
+    if len(audio_data) == 0:
+        return None
+    
+    # Create WAV file in memory
+    wav_buffer = BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(CHANNELS)
+        wav_file.setsampwidth(2)  # 16-bit = 2 bytes
+        wav_file.setframerate(OUTPUT_SAMPLE_RATE)
+        wav_file.writeframes(audio_data)
+    
+    wav_buffer.seek(0)
+    return wav_buffer.read()
+
+def clear_audio_chunks():
+    """Clear collected audio chunks."""
+    global audio_chunks
+    audio_chunks = []

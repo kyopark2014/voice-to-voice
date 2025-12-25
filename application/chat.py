@@ -1083,6 +1083,9 @@ async def _run_translator_async(text, language, final):
     """Async implementation of run_translator."""
     global _background_task
     
+    # Enable Streamlit audio mode for Docker/Streamlit environment
+    translator.use_streamlit_audio = True
+    
     logger.info(f"is_active: {translator.is_active}")    
     if not translator.is_active:        
         logger.info(f"Starting translator as background task...")
@@ -1159,6 +1162,9 @@ async def _run_translator_async(text, language, final):
         
         translated_text = "".join(response_chunks) if response_chunks else text
         logger.info(f"Final translated text: {translated_text}")
+        
+        # Wait a bit more for audio to be collected
+        await asyncio.sleep(1.0)
         
     except Exception as e:
         error_msg = str(e) if e else "Unknown error"

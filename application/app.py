@@ -211,6 +211,23 @@ def display_chat_messages() -> None:
 
                         file_name = url[url.rfind('/')+1:]
                         st.image(url, caption=file_name, use_container_width=True)
+            
+            # Display audio if available
+            if "audio" in message and message["audio"]:
+                audio_base64 = message["audio"]
+                audio_data_url = f"data:audio/wav;base64,{audio_base64}"
+                audio_html = f"""
+                <audio controls style="width: 100%;">
+                    <source src="{audio_data_url}" type="audio/wav">
+                    Your browser does not support the audio element.
+                </audio>
+                """
+                st.markdown(audio_html, unsafe_allow_html=True)
+            
+            # Display response (translated text) if available
+            if "response" in message and message["response"]:
+                st.markdown(f"**번역:** {message['response']}")
+            
             st.markdown(message["content"])
 
 display_chat_messages()
@@ -297,16 +314,50 @@ if prompt := st.chat_input("메시지를 입력하세요."):
 
         elif mode == 'Translator (Text2Speech)':
             final = st.empty()
+            audio_container = st.empty()
             response = chat.run_translator(prompt, language, final)
             logger.info(f"response: {response}")
             final.write(response)
+
+            # Get and display audio if available
+            audio_wav_bytes = translator.get_audio_wav_bytes()
+            audio_base64 = None
+            if audio_wav_bytes:
+                logger.info(f"Displaying audio in Streamlit: {len(audio_wav_bytes)} bytes")
+                
+                # Encode audio to base64 for HTML embedding
+                import base64
+                audio_base64 = base64.b64encode(audio_wav_bytes).decode('utf-8')
+                audio_data_url = f"data:audio/wav;base64,{audio_base64}"
+                
+                # Create HTML audio element
+                audio_html = f"""
+                <audio controls style="width: 100%;">
+                    <source src="{audio_data_url}" type="audio/wav">
+                    Your browser does not support the audio element.
+                </audio>
+                """
+                audio_container.markdown(audio_html, unsafe_allow_html=True)
+                
+                # Clear audio chunks after displaying
+                translator.clear_audio_chunks()
 
             # translate
             pronunciate_to_korean = chat.pronunciate_to_korean(response, language)
             logger.info(f"pronunciate_to_korean: {pronunciate_to_korean}")
             st.info(pronunciate_to_korean)
 
-            st.session_state.messages.append({"role": "assistant", "content": pronunciate_to_korean})
+            # Add message with audio and response
+            message_data = {
+                "role": "assistant", 
+                "content": pronunciate_to_korean
+            }
+            if audio_base64:
+                message_data["audio"] = audio_base64
+            if response:
+                message_data["response"] = response
+            
+            st.session_state.messages.append(message_data)
 
         else:
             stream = chat.general_conversation(prompt)
