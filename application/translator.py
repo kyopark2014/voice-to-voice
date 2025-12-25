@@ -689,15 +689,7 @@ async def process_text_input(user_input):
     logger.info(f"📝 Text sent: {user_input}\n")
 
 async def send_text_input(text):
-    """
-    외부에서 텍스트 입력을 주입하는 함수.
-    
-    Args:
-        text: 전송할 텍스트 문자열
-    
-    Example:
-        await send_text_input("안녕하세요")
-    """
+    """Send text input to Nova Sonic."""
     global is_active
     if not is_active:
         logger.info("Session is not active. Setting is_active to False.")

@@ -313,11 +313,9 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 chat.save_to_memory(prompt, response)            
 
         elif mode == 'Translator (Text2Speech)':
-            final = st.empty()
             audio_container = st.empty()
-            response = chat.run_translator(prompt, language, final)
+            response = chat.run_translator(prompt, language)
             logger.info(f"response: {response}")
-            final.write(response)
 
             # Get and display audio if available
             audio_wav_bytes = translator.get_audio_wav_bytes()
