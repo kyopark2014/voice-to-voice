@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speech-to-speech
+  labels:
+    app: speech-to-speech
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: speech-to-speech
+  template:
+    metadata:
+      labels:
+        app: speech-to-speech
+    spec:
+      containers:
+      - name: speech-to-speech
+        image: 262976740991.dkr.ecr.us-west-2.amazonaws.com/speech-to-speech:latest
+        ports:
+        - containerPort: 8501
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "us-west-2"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: speech-to-speech-service
+spec:
+  selector:
+    app: speech-to-speech
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8501
+  type: LoadBalancer
