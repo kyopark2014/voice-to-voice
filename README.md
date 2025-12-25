@@ -44,7 +44,7 @@ sessionEnd 이벤트를 전송합니다.
 ## 설치 방법
 
 ```text
-pip install aws_sdk_bedrock_runtime portaudio
+pip install aws_sdk_bedrock_runtime 
 ```
 
 Mac에서는 아래와 같이 portaudio을 설치합니다.
