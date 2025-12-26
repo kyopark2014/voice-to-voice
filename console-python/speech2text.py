@@ -344,7 +344,7 @@ async def _process_responses():
                     
                     # Handle audio output
                     elif 'audioOutput' in json_data['event']:
-                        print(f"audio...")
+                        # print(f"audio...")
                         audio_content = json_data['event']['audioOutput']['content']
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
@@ -354,10 +354,10 @@ async def _process_responses():
                         print(f"-> completionStart: {completionId}")                            
                     elif 'contentEnd' in json_data['event']:
                         print(f"-> contentEnd")
-                    elif 'usageEvent' in json_data['event']:
-                        print(f"usageEvent...")
-                    else:
-                        print(f"json_data: {json_data}")
+                    # elif 'usageEvent' in json_data['event']:
+                    #     print(f"usageEvent...")
+                    # else:
+                    #     print(f"json_data: {json_data}")
     except Exception as e:
         print(f"Error processing responses: {e}")
 

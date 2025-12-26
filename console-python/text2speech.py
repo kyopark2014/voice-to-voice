@@ -146,16 +146,16 @@ async def start_session():
     is_active = True
     
     # Send session start event
+    
     session_start = '''
     {
         "event": {
         "sessionStart": {
             "inferenceConfiguration": {
-            "maxTokens": 1024,
-            "topP": 0.9,
-            "temperature": 0.1
+                "maxTokens": 1024,
+                "topP": 0.9,
+                "temperature": 0.1
             }
-        }
         }
     }
     '''

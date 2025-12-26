@@ -185,10 +185,10 @@ async def start_session():
     await send_event(text_content_start)
     
     system_prompt = (
-        "너는 여행 전문가이고 이름은 서연입니다. 편안한 대화를 하고자 합니다."
-        "사용자의 질문에 대한 답변은 한문장으로 반드시 하세요."
-        "사용자가 자세히 알려달라고 할때까지는 최대한 짭게 대답하세요."
-        
+        "당신은 실시간 번역기입니다." 
+        "사용자가 일본어로 입력하면, 원문 그대로를 한국어로 번역하여 답변하세요."
+        "번역한 내용만 답변합니다."        
+        "이전의 대화는 무시하고 현재 대화만 번역합니다."
     )
 
     text_input = f'''
@@ -344,7 +344,7 @@ async def _process_responses():
                     
                     # Handle audio output
                     elif 'audioOutput' in json_data['event']:
-                        print(f"audio...")
+                        # print(f"audio...")
                         audio_content = json_data['event']['audioOutput']['content']
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
@@ -354,10 +354,10 @@ async def _process_responses():
                         print(f"-> completionStart: {completionId}")                            
                     elif 'contentEnd' in json_data['event']:
                         print(f"-> contentEnd")
-                    elif 'usageEvent' in json_data['event']:
-                        print(f"usageEvent...")
-                    else:
-                        print(f"json_data: {json_data}")
+                    # elif 'usageEvent' in json_data['event']:
+                    #     print(f"usageEvent...")
+                    # else:
+                    #     print(f"json_data: {json_data}")
     except Exception as e:
         print(f"Error processing responses: {e}")
 
