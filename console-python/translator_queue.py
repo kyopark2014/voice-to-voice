@@ -1,4 +1,6 @@
 import os
+import sys
+import io
 import asyncio
 import base64
 import json
@@ -385,6 +387,7 @@ async def end_session():
 
 async def _process_responses():
     """Process responses from the stream."""
+    global role, display_assistant_text
     try:
         while is_active:
             output = await stream.await_output()
@@ -418,6 +421,8 @@ async def _process_responses():
                         
                         if (role == "ASSISTANT" and display_assistant_text):
                             print(f"Assistant: {text}")
+                            # Put text response into output_queue for translation function
+                            await output_queue.put(text)
                         elif role == "USER":
                             print(f"User: {text}")
                     
@@ -808,13 +813,38 @@ def run_translator(text):
         # If loop is not running, run it
         return loop.run_until_complete(_run_translator_async(text))
 
+def initialize_stdin():
+    # Force stdin to UTF-8 encoding
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    
+    # Reconfigure stdin to UTF-8
+    try:
+        sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        # Fallback: wrap stdin with TextIOWrapper
+        sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', errors='replace')
+    
+# Safe input function that handles encoding errors
+def stdin(prompt):
+    try:
+        return input(prompt)
+    except UnicodeDecodeError:
+        # If input fails, read from stdin buffer directly
+        print(f'UnicodeDecodeError -> {sys.stdin.buffer.readline()}')
+        try:
+            line = sys.stdin.buffer.readline()
+            return line.decode('utf-8', errors='ignore').rstrip('\n\r')
+        except Exception:
+            return ''
+
 if __name__ == "__main__":
     # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
-    # This will only set environment variables if they are not already set
     load_aws_credentials_from_config()
 
     while True:
-        user_input = input("You: ")
-        if user_input.strip().lower() == 'quit':
+        user_input = stdin("You: ")
+        if user_input.strip().lower() == 'quit' or user_input.strip() == '':
             break
-        asyncio.run(run_translator(user_input))
+
+        result = run_translator(user_input)
+        print(f"Translation result: {result}")
