@@ -1,9 +1,12 @@
 import os
+import sys
+import io
 import asyncio
 import base64
 import json
 import uuid
 import pyaudio
+import time
 from pathlib import Path
 from configparser import ConfigParser
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWithBidirectionalStreamOperationInput
@@ -86,6 +89,7 @@ audio_content_name = str(uuid.uuid4())
 text_content_name = str(uuid.uuid4())
 audio_queue = asyncio.Queue()
 input_queue = asyncio.Queue()  # 외부에서 텍스트 입력을 받기 위한 큐
+output_queue = asyncio.Queue()
 role = None
 display_assistant_text = False
 is_active = False
@@ -104,6 +108,7 @@ def _initialize_client(region):
 
 async def send_event(event_json):
     """Send an event to the stream."""
+    global is_active
     # Ensure event_json is a string
     if isinstance(event_json, bytes):
         event_json = event_json.decode('utf-8', errors='replace')
@@ -117,10 +122,15 @@ async def send_event(event_json):
         # Fallback: replace invalid characters
         encoded_bytes = event_json.encode('utf-8', errors='replace')
     
-    event = InvokeModelWithBidirectionalStreamInputChunk(
-        value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
-    )
-    await stream.input_stream.send(event)
+    try:
+        event = InvokeModelWithBidirectionalStreamInputChunk(
+            value=BidirectionalInputPayloadPart(bytes_=encoded_bytes)
+        )
+        await stream.input_stream.send(event)
+    except Exception as e:
+        print(f"Error sending event: {e}")
+        is_active = False
+        raise
 
 async def start_session():
     """Start a new session with Nova Sonic."""
@@ -377,6 +387,7 @@ async def end_session():
 
 async def _process_responses():
     """Process responses from the stream."""
+    global role, display_assistant_text
     try:
         while is_active:
             output = await stream.await_output()
@@ -410,6 +421,8 @@ async def _process_responses():
                         
                         if (role == "ASSISTANT" and display_assistant_text):
                             print(f"Assistant: {text}")
+                            # Put text response into output_queue for translation function
+                            await output_queue.put(text)
                         elif role == "USER":
                             print(f"User: {text}")
                     
@@ -546,16 +559,11 @@ async def process_text_input(user_input):
     print(f"📝 Text sent: {user_input}\n")
 
 async def send_text_input(text):
-    """
-    외부에서 텍스트 입력을 주입하는 함수.
-    
-    Args:
-        text: 전송할 텍스트 문자열
-    
-    Example:
-        await send_text_input("안녕하세요")
-    """
+    """Send text input to Nova Sonic."""
+    global is_active
     if not is_active:
+        print("Session is not active. Setting is_active to False.")
+        is_active = False
         raise RuntimeError("Session is not active. Call start_session() first.")
     await input_queue.put(text)
 
@@ -587,7 +595,7 @@ async def _read_stdin_to_queue():
         if is_active:
             await input_queue.put('__stop__')
 
-async def run_translator():
+async def translate():
     """
     번역기를 실행합니다.
     
@@ -610,7 +618,7 @@ async def run_translator():
     silent_audio_task = asyncio.create_task(send_silent_audio())
     
     # Start stdin reading task
-    stdin_task = asyncio.create_task(_read_stdin_to_queue())
+    # stdin_task = asyncio.create_task(_read_stdin_to_queue())
     
     try:
         while is_active:
@@ -629,13 +637,13 @@ async def run_translator():
     except Exception as e:
         print(f"Error reading text: {e}")
     finally:
-        # Stop stdin task if it exists
-        if stdin_task and not stdin_task.done():
-            stdin_task.cancel()
-            try:
-                await stdin_task
-            except asyncio.CancelledError:
-                pass
+        # # Stop stdin task if it exists
+        # if stdin_task and not stdin_task.done():
+        #     stdin_task.cancel()
+        #     try:
+        #         await stdin_task
+        #     except asyncio.CancelledError:
+        #         pass
         
         # Stop silent audio task
         if not silent_audio_task.done():
@@ -671,9 +679,172 @@ async def run_translator():
 
     print("Session ended")
 
+_translator_loop = None
+_background_task = None
+
+def get_or_create_loop():
+    """Get existing event loop or create a new one."""
+    global _translator_loop
+    
+    if _translator_loop is None or _translator_loop.is_closed():
+        # Create new event loop
+        _translator_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_translator_loop)
+        print(f"Created new event loop: {_translator_loop}")
+        # Start loop in background thread
+        import threading
+        def run_loop():
+            _translator_loop.run_forever()
+        thread = threading.Thread(target=run_loop, daemon=True)
+        thread.start()
+        print("Started event loop in background thread")
+    else:
+        print(f"Using existing event loop: {_translator_loop}")
+    
+    return _translator_loop
+
+async def _run_translator_async(text):
+    """Async implementation of run_translator."""
+    global _background_task
+    
+    # Enable Streamlit audio mode for Docker/Streamlit environment
+    # use_streamlit_audio = True
+    
+    print(f"is_active: {is_active}")    
+    if not is_active:        
+        print(f"Starting translator as background task...")
+        # Use the persistent loop created by run_translator
+        loop = get_or_create_loop()
+        _background_task = loop.create_task(translate())
+        print(f"Created translate task: {_background_task}")
+        await asyncio.sleep(0.5)
+    
+    if _background_task and not _background_task.done():
+        await asyncio.sleep(0.1)
+
+    # Send text using send_text_input with provided text
+    print(f"Sending text: {text}")
+    await send_text_input(text=text)
+
+    # Wait for response from output_queue
+    print(f"Waiting for response from output_queue")
+    translated_text = ""
+    try:
+        # Wait for response with timeout (30 seconds)
+        response_chunks = []
+        timeout = 30.0  # seconds
+        start_time = time.time()
+        
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3  # Wait for 3 consecutive timeouts before giving up
+        
+        while True:
+            try:
+                # Wait for chunk with timeout
+                remaining_time = timeout - (time.time() - start_time)
+                if remaining_time <= 0:
+                    print("Timeout waiting for translation response")
+                    break
+                    
+                chunk = await asyncio.wait_for(
+                    output_queue.get(),
+                    timeout=min(remaining_time, 1.5)  # Check every 1.5 seconds
+                )
+                
+                # Reset timeout counter when we receive a chunk
+                consecutive_timeouts = 0
+                
+                response_chunks.append(chunk)
+                print(f"Received translation chunk: {chunk}")
+                        
+            except asyncio.TimeoutError:
+                consecutive_timeouts += 1
+                print(f"Timeout waiting for chunk (consecutive: {consecutive_timeouts})")
+                
+                # Check if there are any chunks in the queue that arrived during the timeout
+                while not output_queue.empty():
+                    try:
+                        chunk = output_queue.get_nowait()
+                        consecutive_timeouts = 0  # Reset counter if we get a chunk
+                        response_chunks.append(chunk)
+                        print(f"Received translation chunk after timeout check: {chunk}")
+                    except asyncio.QueueEmpty:
+                        break
+                
+                # If we have chunks and had multiple consecutive timeouts, assume response is complete
+                if response_chunks and consecutive_timeouts >= max_consecutive_timeouts:
+                    print(f"Received {consecutive_timeouts} consecutive timeouts, assuming translation complete")
+                    break
+                
+                # If no chunks yet, continue waiting
+                if not response_chunks:
+                    remaining_time = timeout - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        print("Overall timeout waiting for translation response")
+                        break
+                    continue
+        
+        translated_text = "".join(response_chunks) if response_chunks else text
+        print(f"Final translated text: {translated_text}")
+        
+        # Wait a bit more for audio to be collected
+        await asyncio.sleep(1.0)
+        
+    except Exception as e:
+        error_msg = str(e) if e else "Unknown error"
+        print(f"Error reading from output_queue: {error_msg}")
+        if hasattr(e, '__traceback__'):
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+    
+    return translated_text
+
+def run_translator(text):
+    """Synchronous wrapper for run_translator that uses persistent event loop."""
+    # Get or create persistent event loop
+    loop = get_or_create_loop()
+    
+    # Run the async function in the persistent loop
+    if loop.is_running():
+        # If loop is already running, schedule the coroutine
+        future = asyncio.run_coroutine_threadsafe(_run_translator_async(text), loop)
+        return future.result(timeout=35.0)  # Wait up to 35 seconds
+    else:
+        # If loop is not running, run it
+        return loop.run_until_complete(_run_translator_async(text))
+
+def initialize_stdin():
+    # Force stdin to UTF-8 encoding
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    
+    # Reconfigure stdin to UTF-8
+    try:
+        sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        # Fallback: wrap stdin with TextIOWrapper
+        sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', errors='replace')
+    
+# Safe input function that handles encoding errors
+def stdin(prompt):
+    try:
+        return input(prompt)
+    except UnicodeDecodeError:
+        # If input fails, read from stdin buffer directly
+        print(f'UnicodeDecodeError -> {sys.stdin.buffer.readline()}')
+        try:
+            line = sys.stdin.buffer.readline()
+            return line.decode('utf-8', errors='ignore').rstrip('\n\r')
+        except Exception:
+            return ''
+
 if __name__ == "__main__":
     # Load AWS credentials from ~/.aws/credentials and ~/.aws/config
-    # This will only set environment variables if they are not already set
     load_aws_credentials_from_config()
 
-    asyncio.run(run_translator())
+    while True:
+        user_input = stdin("You: ")
+        if user_input.strip().lower() == 'quit' or user_input.strip() == '':
+            break
+
+        result = run_translator(user_input)
+        print(f"Translation result: {result}")
