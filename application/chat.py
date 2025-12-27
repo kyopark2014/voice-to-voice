@@ -91,9 +91,12 @@ agent_type = 'langgraph'
 enable_memory = 'Disable'
 user_id = agent_type # for testing
 
-def update(modelName, debugMode):    
+language = "Japanese"
+traslation_mode = "text2speech"
+
+def update(modelName, debugMode, langMode, traslationMode):    
     global model_name, model_id, model_type, debug_mode
-    global models, user_id, agent_type
+    global models, user_id, agent_type, language, traslation_mode
 
     # load mcp.env    
     # mcp_env = utils.load_mcp_env()
@@ -113,6 +116,14 @@ def update(modelName, debugMode):
     # update mcp.env    
     # utils.save_mcp_env(mcp_env)
     # logger.info(f"mcp.env updated: {mcp_env}")
+
+    if language != langMode:
+        language = langMode
+        logger.info(f"language: {language}")
+
+    if traslation_mode != traslationMode:
+        traslation_mode = traslationMode
+        logger.info(f"traslation_mode: {traslation_mode}")
 
 def update_mcp_env():
     mcp_env = utils.load_mcp_env()
@@ -1079,7 +1090,7 @@ def get_or_create_loop():
     
     return _translator_loop
 
-async def _run_translator_async(text, language):
+async def _run_text2speech_async(text, language):
     """Async implementation of run_translator."""
     global _background_task
     
@@ -1091,8 +1102,9 @@ async def _run_translator_async(text, language):
         logger.info(f"Starting translator as background task...")
         # Use the persistent loop created by run_translator
         loop = get_or_create_loop()
-        _background_task = loop.create_task(translator.translate(language))
+        _background_task = loop.create_task(translator.text2speech(language))
         logger.info(f"Created translate task: {_background_task}")
+
         await asyncio.sleep(0.5)
     
     if _background_task and not _background_task.done():
@@ -1175,19 +1187,98 @@ async def _run_translator_async(text, language):
     
     return translated_text
 
-def run_translator(text, language):
-    """Synchronous wrapper for run_translator that uses persistent event loop."""
-    # Get or create persistent event loop
-    loop = get_or_create_loop()
+async def _run_speech2text_async(language):
+    """Async implementation of run_speech2text."""
+    global _background_task
     
-    # Run the async function in the persistent loop
-    if loop.is_running():
-        # If loop is already running, schedule the coroutine
-        future = asyncio.run_coroutine_threadsafe(_run_translator_async(text, language), loop)
-        return future.result(timeout=35.0)  # Wait up to 35 seconds
-    else:
-        # If loop is not running, run it
-        return loop.run_until_complete(_run_translator_async(text, language))
+    # Enable Streamlit audio mode for Docker/Streamlit environment
+    translator.use_streamlit_audio = True
+    
+    logger.info(f"is_active: {translator.is_active}")    
+    if not translator.is_active:        
+        logger.info(f"Starting translator as background task...")
+        # Use the persistent loop created by run_translator
+        loop = get_or_create_loop()
+        _background_task = loop.create_task(translator.speech2text(language))
+        logger.info(f"Created translate task: {_background_task}")
+
+        await asyncio.sleep(0.5)
+    
+    if _background_task and not _background_task.done():
+        await asyncio.sleep(0.1)
+
+    # Wait for response from output_queue
+    logger.info(f"Waiting for response from output_queue")
+    translated_text = ""
+    try:
+        # Wait for response with timeout (30 seconds)
+        response_chunks = []
+        timeout = 30.0  # seconds
+        start_time = time.time()
+        
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3  # Wait for 3 consecutive timeouts before giving up
+        
+        while True:
+            try:
+                # Wait for chunk with timeout
+                remaining_time = timeout - (time.time() - start_time)
+                if remaining_time <= 0:
+                    logger.info("Timeout waiting for translation response")
+                    break
+                    
+                chunk = await asyncio.wait_for(
+                    translator.output_queue.get(),
+                    timeout=min(remaining_time, 1.5)  # Check every 1.5 seconds
+                )
+                
+                # Reset timeout counter when we receive a chunk
+                consecutive_timeouts = 0
+                
+                response_chunks.append(chunk)
+                logger.info(f"Received translation chunk: {chunk}")
+                        
+            except asyncio.TimeoutError:
+                consecutive_timeouts += 1
+                logger.debug(f"Timeout waiting for chunk (consecutive: {consecutive_timeouts})")
+                
+                # Check if there are any chunks in the queue that arrived during the timeout
+                while not translator.output_queue.empty():
+                    try:
+                        chunk = translator.output_queue.get_nowait()
+                        consecutive_timeouts = 0  # Reset counter if we get a chunk
+                        response_chunks.append(chunk)
+                        logger.info(f"Received translation chunk after timeout check: {chunk}")
+                    except asyncio.QueueEmpty:
+                        break
+                
+                # If we have chunks and had multiple consecutive timeouts, assume response is complete
+                if response_chunks and consecutive_timeouts >= max_consecutive_timeouts:
+                    logger.info(f"Received {consecutive_timeouts} consecutive timeouts, assuming translation complete")
+                    break
+                
+                # If no chunks yet, continue waiting
+                if not response_chunks:
+                    remaining_time = timeout - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        logger.info("Overall timeout waiting for translation response")
+                        break
+                    continue
+        
+        translated_text = "".join(response_chunks) if response_chunks else text
+        logger.info(f"Final translated text: {translated_text}")
+        
+        # Wait a bit more for audio to be collected
+        await asyncio.sleep(1.0)
+        
+    except Exception as e:
+        error_msg = str(e) if e else "Unknown error"
+        logger.info(f"Error reading from output_queue: {error_msg}")
+        if hasattr(e, '__traceback__'):
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+    
+    return translated_text
 
 def pronunciate_to_korean(context, language):
     system = (
@@ -1218,3 +1309,32 @@ def pronunciate_to_korean(context, language):
         raise Exception ("Not able to request to LLM")
 
     return msg[msg.find('<result>')+8:len(msg)-9] # remove <result> tag
+
+def run_text2speech(text):
+    """Synchronous wrapper for run_text2speech that uses persistent event loop."""
+    # Get or create persistent event loop
+    loop = get_or_create_loop()
+    
+    # Run the async function in the persistent loop
+    if loop.is_running():
+        # If loop is already running, schedule the coroutine
+        future = asyncio.run_coroutine_threadsafe(_run_text2speech_async(text, language), loop)
+        return future.result(timeout=35.0)  # Wait up to 35 seconds
+    else:
+        # If loop is not running, run it
+        return loop.run_until_complete(_run_text2speech_async(text, language))
+
+def run_speech2text(st):
+    """Synchronous wrapper for run_speech2text that uses persistent event loop."""
+    # Get or create persistent event loop
+    loop = get_or_create_loop()
+    
+    # Run the async function in the persistent loop
+    if loop.is_running():
+        # If loop is already running, schedule the coroutine
+        future = asyncio.run_coroutine_threadsafe(_run_speech2text_async(language), loop)
+        return future.result(timeout=35.0)  # Wait up to 35 seconds
+    else:
+        # If loop is not running, run it
+        return loop.run_until_complete(_run_speech2text_async(language))
+

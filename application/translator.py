@@ -5,6 +5,9 @@ import json
 import uuid
 import pyaudio
 import wave
+import logging
+import sys
+
 from io import BytesIO
 from pathlib import Path
 from configparser import ConfigParser
@@ -13,8 +16,6 @@ from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient, InvokeModelWith
 from aws_sdk_bedrock_runtime.models import InvokeModelWithBidirectionalStreamInputChunk, BidirectionalInputPayloadPart
 from aws_sdk_bedrock_runtime.config import Config
 from smithy_aws_core.identity.environment import EnvironmentCredentialsResolver
-import logging
-import sys
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -157,7 +158,7 @@ async def send_event(event_json):
         is_active = False
         raise
 
-async def start_session(language):
+async def start_session(language, translation_mode):
     """Start a new session with Nova Sonic."""
     global is_active, sonic_client, stream, response
 
@@ -229,13 +230,21 @@ async def start_session(language):
     }}
     '''
     await send_event(text_content_start)
-    
-    system_prompt = (
-        "당신은 실시간 번역기입니다." 
-        f"사용자가 한국어로 입력하면, 원문 그대로를 {language}로 번역하여 답변하세요."
-        "번역한 내용만 답변합니다."        
-        "이전의 대화는 무시하고 현재 대화만 번역합니다."
-    )
+
+    if translation_mode == "text2speech":    
+        system_prompt = (
+            "당신은 실시간 번역기입니다." 
+            f"사용자가 한국어로 입력하면, 원문 그대로를 {language}로 번역하여 답변하세요."
+            "번역한 내용만 답변합니다."        
+            "이전의 대화는 무시하고 현재 대화만 번역합니다."
+        )
+    else: # speech2text
+        system_prompt = (
+            "당신은 실시간 번역기입니다." 
+            f"사용자가 {language}로 입력하면, 원문 그대로를 한국어로 번역하여 답변하세요."
+            "번역한 내용만 답변합니다."        
+            "이전의 대화는 무시하고 현재 대화만 번역합니다."
+        )
 
     text_input = f'''
     {{
@@ -413,7 +422,7 @@ async def end_session():
     # close the stream
     await stream.input_stream.close()
 
-async def _restart_session(language):
+async def _restart_session(language, translation_mode):
     """Restart the session when audio stream length exceeds max length."""
     global is_active, stream, response
     
@@ -453,7 +462,7 @@ async def _restart_session(language):
         is_active = old_is_active
         
         # Start new session (this will create a new response task)
-        await start_session(language)
+        await start_session(language, translation_mode)
         
         logger.info("Session restarted successfully")
         
@@ -725,7 +734,7 @@ async def _read_stdin_to_queue():
         if is_active:
             await input_queue.put('__stop__')
 
-async def translate(language):
+async def text2speech(language):
     global is_active, response, output_queue, input_queue, audio_queue, audio_chunks
     
     # Reset audio chunks for new translation session
@@ -739,7 +748,7 @@ async def translate(language):
     audio_queue = asyncio.Queue()
     
     # Start session
-    await start_session(language)
+    await start_session(language, "text2speech")
     
     # Start audio playback task
     logger.info("Starting audio playback task...")
@@ -790,7 +799,7 @@ async def translate(language):
                     if "exceeded max length" in error_msg or "cumulative audio stream length" in error_msg:
                         logger.info("Detected audio stream length error. Restarting session...")
                         try:
-                            await _restart_session(language)
+                            await _restart_session(language, "text2speech")
                             logger.info("Session restarted. Continuing...")
                             continue  # Continue the loop to wait for next input
                         except Exception as restart_error:
@@ -800,7 +809,7 @@ async def translate(language):
                         # For other errors, try to restart once
                         logger.info("Attempting to restart session due to error...")
                         try:
-                            await _restart_session(language)
+                            await _restart_session(language, "text2speech")
                             logger.info("Session restarted. Continuing...")
                             continue  # Continue the loop to wait for next input
                         except Exception as restart_error:
@@ -848,6 +857,155 @@ async def translate(language):
             silent_audio_task.cancel()
             try:
                 await silent_audio_task
+            except asyncio.CancelledError:
+                pass
+        
+        # End audio input
+        await end_audio_input()
+        logger.info("Text input stopped.")
+        
+        # First cancel the tasks
+        tasks = []
+        if not playback_task.done():
+            logger.info("Cancelling audio playback task...")
+            tasks.append(playback_task)
+        for task in tasks:
+            logger.info(f"Cancelling task: {task}")
+            task.cancel()
+        if tasks:
+            logger.info("Gathering tasks...")
+            await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # End session
+    await end_session()
+    is_active = False
+
+    # cancel the response task
+    if response and not response.done():
+        response.cancel()
+
+    logger.info("Session ended")
+
+async def speech2text(language):
+    global is_active, response, output_queue, input_queue, audio_queue, audio_chunks
+    
+    # Reset audio chunks for new translation session
+    audio_chunks = []
+    
+    # Ensure queues are created in the current event loop
+    # This prevents "bound to a different event loop" errors
+    # Recreate queues in the current event loop to ensure they're bound correctly
+    output_queue = asyncio.Queue()
+    input_queue = asyncio.Queue()
+    audio_queue = asyncio.Queue()
+    
+    # Start session
+    await start_session(language, "speech2text")
+    
+    # Start audio playback task
+    logger.info("Starting audio playback task...")
+    playback_task = asyncio.create_task(play_audio())
+    
+    # Start audio input stream (required for audio output)
+    await start_audio_input()
+    
+    # Start audio capture task
+    capture_task = asyncio.create_task(capture_audio())
+    
+    try:
+        while is_active:
+            # Monitor both input queue and response task
+            # Use asyncio.wait to monitor both simultaneously
+            tasks_to_wait = [asyncio.create_task(input_queue.get())]
+            if response:
+                tasks_to_wait.append(response)
+            
+            done, pending = await asyncio.wait(
+                tasks_to_wait,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Check if response task completed (failed)
+            response_completed = False
+            if response and response in done:
+                response_completed = True
+                try:
+                    # Check if task completed with an error
+                    await response
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.info(f"Response task failed: {e}")
+                    
+                    # Cancel the input queue task if it's still pending
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    
+                    # Check if it's an audio stream length exceeded error
+                    if "exceeded max length" in error_msg or "cumulative audio stream length" in error_msg:
+                        logger.info("Detected audio stream length error. Restarting session...")
+                        try:
+                            await _restart_session(language, "speech2text")
+                            logger.info("Session restarted. Continuing...")
+                            continue  # Continue the loop to wait for next input
+                        except Exception as restart_error:
+                            logger.info(f"Failed to restart session: {restart_error}")
+                            break
+                    else:
+                        # For other errors, try to restart once
+                        logger.info("Attempting to restart session due to error...")
+                        try:
+                            await _restart_session(language, "speech2text")
+                            logger.info("Session restarted. Continuing...")
+                            continue  # Continue the loop to wait for next input
+                        except Exception as restart_error:
+                            logger.info(f"Failed to restart session: {restart_error}")
+                            break
+            
+            # If response task completed without error, just continue
+            if response_completed:
+                continue
+            
+            # Get user input from completed task
+            user_input_task = None
+            for task in done:
+                if task != response:
+                    user_input_task = task
+                    break
+            
+            if user_input_task:
+                user_input = await user_input_task
+                
+                # Check for special stop signal
+                if user_input is None or user_input.strip().lower() == '__stop__':
+                    logger.info("Stopping text input...")
+                    break
+                
+                # Process text input
+                await process_text_input(user_input)
+            else:
+                # If no input task, just continue (response task might have completed)
+                continue
+            
+    except Exception as e:
+        logger.info(f"Error reading text: {e}")
+    finally:
+        # # Stop stdin task if it exists
+        # if stdin_task and not stdin_task.done():
+        #     stdin_task.cancel()
+        #     try:
+        #         await stdin_task
+        #     except asyncio.CancelledError:
+        #         pass
+        
+        # Stop silent audio task
+        if not capture_task.done():
+            capture_task.cancel()
+            try:
+                await capture_task
             except asyncio.CancelledError:
                 pass
         

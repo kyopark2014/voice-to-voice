@@ -184,9 +184,10 @@ async def start_session():
     '''
     await send_event(text_content_start)
     
+    language = "일본어"
     system_prompt = (
         "당신은 실시간 번역기입니다." 
-        "사용자가 일본어로 입력하면, 원문 그대로를 한국어로 번역하여 답변하세요."
+        f"사용자가 {language}로 입력하면, 원문 그대로를 한국어로 번역하여 답변하세요."
         "번역한 내용만 답변합니다."        
         "이전의 대화는 무시하고 현재 대화만 번역합니다."
     )
@@ -322,12 +323,12 @@ async def _process_responses():
                         content_start = json_data['event']['contentStart'] 
                         # set role
                         role = content_start['role']
-                        print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
+                        # print(f"-> contentStart: role={content_start['role']}, type={content_start['type']}, completionId={content_start['completionId']}, contentId={content_start['contentId']}")
                         
                         # Check for speculative content
                         if 'additionalModelFields' in content_start:
                             additional_fields = json.loads(content_start['additionalModelFields'])
-                            print(f" additionalModelFields: {additional_fields}")
+                            # print(f" additionalModelFields: {additional_fields}")
                             if additional_fields.get('generationStage') == 'SPECULATIVE':
                                 display_assistant_text = True
                             else:
@@ -349,11 +350,11 @@ async def _process_responses():
                         audio_bytes = base64.b64decode(audio_content)
                         await audio_queue.put(audio_bytes)
 
-                    elif 'completionStart' in json_data['event']:
-                        completionId = json_data['event']['completionStart']['completionId']
-                        print(f"-> completionStart: {completionId}")                            
-                    elif 'contentEnd' in json_data['event']:
-                        print(f"-> contentEnd")
+                    # elif 'completionStart' in json_data['event']:
+                    #     completionId = json_data['event']['completionStart']['completionId']
+                    #     print(f"-> completionStart: {completionId}")                            
+                    # elif 'contentEnd' in json_data['event']:
+                    #     print(f"-> contentEnd")
                     # elif 'usageEvent' in json_data['event']:
                     #     print(f"usageEvent...")
                     # else:

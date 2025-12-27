@@ -35,6 +35,9 @@ mode_descriptions = {
     "Translator (Text2Speech)": [
         "Nova Sonic를 이용해 실시간 번역을 구현합니다."
     ],
+    "Translator (Speech2Text)": [
+        "Nova Sonic를 이용해 실시간 번역을 구현합니다."
+    ]
 }
 
 def update_seed_image_url(url):
@@ -55,7 +58,7 @@ with st.sidebar:
     
     # radio selection
     mode = st.radio(
-        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent", "Translator (Text2Speech)"], index=3
+        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "MCP agent", "Translator (Text2Speech)", "Translator (Speech2Text)"], index=3
     )   
     st.info(mode_descriptions[mode][0])
     
@@ -126,6 +129,13 @@ with st.sidebar:
         mcp_servers = []
 
     if mode == 'Translator (Text2Speech)':
+        translationMode = "text2speech"
+    elif mode == 'Translator (Speech2Text)':
+        translationMode = "speech2text"
+    else:
+        translationMode = ""
+
+    if mode == 'Translator (Text2Speech)' or mode == 'Translator (Speech2Text)':
         # model selection box
         selectLanguage = st.selectbox(
             '🖊️ 번역할 언어를 선택하세요',
@@ -177,7 +187,7 @@ with st.sidebar:
     memoryMode = 'Enable' if enable_memory else 'Disable'
     # logger.info(f"memory_mode: {memory_mode}")
 
-    chat.update(modelName, debugMode)    
+    chat.update(modelName, debugMode, language, translationMode)    
 
     st.success(f"Connected to {modelName}", icon="💚")
     clear_button = st.button("대화 초기화", key="clear")
@@ -314,7 +324,52 @@ if prompt := st.chat_input("메시지를 입력하세요."):
 
         elif mode == 'Translator (Text2Speech)':
             audio_container = st.empty()
-            response = chat.run_translator(prompt, language)
+            response = chat.run_text2speech(prompt)
+            logger.info(f"response: {response}")
+
+            # Get and display audio if available
+            audio_wav_bytes = translator.get_audio_wav_bytes()
+            audio_base64 = None
+            if audio_wav_bytes:
+                logger.info(f"Displaying audio in Streamlit: {len(audio_wav_bytes)} bytes")
+                
+                # Encode audio to base64 for HTML embedding
+                import base64
+                audio_base64 = base64.b64encode(audio_wav_bytes).decode('utf-8')
+                audio_data_url = f"data:audio/wav;base64,{audio_base64}"
+                
+                # Create HTML audio element
+                audio_html = f"""
+                <audio controls style="width: 100%;">
+                    <source src="{audio_data_url}" type="audio/wav">
+                    Your browser does not support the audio element.
+                </audio>
+                """
+                audio_container.markdown(audio_html, unsafe_allow_html=True)
+                
+                # Clear audio chunks after displaying
+                translator.clear_audio_chunks()
+
+            # translate
+            pronunciate_to_korean = chat.pronunciate_to_korean(response, language)
+            logger.info(f"pronunciate_to_korean: {pronunciate_to_korean}")
+            st.info(pronunciate_to_korean)
+
+            # Add message with audio and response
+            message_data = {
+                "role": "assistant", 
+                "content": pronunciate_to_korean
+            }
+            if audio_base64:
+                message_data["audio"] = audio_base64
+            if response:
+                message_data["response"] = response
+            
+            st.session_state.messages.append(message_data)
+
+        elif mode == 'Translator (Speech2Text)':
+            audio_container = st.empty()
+            response = chat.run_speech2text(prompt)
             logger.info(f"response: {response}")
 
             # Get and display audio if available
